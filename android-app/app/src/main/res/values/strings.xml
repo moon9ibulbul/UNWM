@@ -30,6 +30,7 @@
     <string name="detection_success_hint">Pilih satu atau beberapa hasil deteksi atau ketuk pratinjau untuk memindahkan watermark.</string>
     <string name="detection_match_label">Deteksi %1$d (skor %2$.2f)</string>
     <string name="detection_apply_all">Proses semua deteksi</string>
+    <string name="detection_threshold">Ambang Deteksi Minimum</string>
     <string name="select_images_bulk">Pilih Gambar (Bulk)</string>
     <string name="bulk_card_title">Mode Antrian</string>
     <string name="bulk_queue_count">Total dalam antrian: %1$d</string>
