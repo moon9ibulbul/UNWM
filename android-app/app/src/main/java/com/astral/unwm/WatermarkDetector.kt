@@ -12,7 +12,7 @@ import org.opencv.imgproc.Imgproc
 import kotlin.math.max
 import kotlin.math.min
 
-private const val DEFAULT_MATCH_THRESHOLD = 0.7
+private const val DEFAULT_MATCH_THRESHOLD = 0.85
 private const val DEFAULT_ALPHA_THRESHOLD = 5.0
 
 /**
