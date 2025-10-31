@@ -95,8 +95,8 @@ fun AstralUNWMApp() {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var alphaAdjust by remember { mutableFloatStateOf(1f) }
-    var transparencyThreshold by remember { mutableFloatStateOf(10f) }
-    var opaqueThreshold by remember { mutableFloatStateOf(230f) }
+    var transparencyThreshold by remember { mutableFloatStateOf(0f) }
+    var opaqueThreshold by remember { mutableFloatStateOf(255f) }
 
     var isProcessing by remember { mutableStateOf(false) }
     var lastSaveMessage by remember { mutableStateOf<String?>(null) }
@@ -253,8 +253,8 @@ fun AstralUNWMApp() {
             title = stringResource(id = R.string.alpha_adjust),
             value = alphaAdjust,
             onValueChange = { alphaAdjust = it },
-            valueRange = 0.5f..2f,
-            steps = 15,
+            valueRange = 0.1f..2f,
+            steps = 37,
             valueFormatter = { value -> String.format("%.2fx", value) }
         )
         SliderCard(
