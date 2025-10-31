@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -139,6 +140,7 @@ fun AstralUNWMApp() {
         }
 
         PreviewCard(baseBitmap, watermarkBitmap, offsetX, offsetY)
+        WatermarkPreviewCard(watermarkBitmap)
 
         SliderCard(
             title = stringResource(id = R.string.offset_x),
@@ -179,7 +181,10 @@ fun AstralUNWMApp() {
             valueFormatter = { value -> value.roundToInt().toString() }
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
             Button(
                 enabled = !isProcessing && baseBitmap != null && watermarkBitmap != null,
                 onClick = {
@@ -219,26 +224,21 @@ fun AstralUNWMApp() {
                     }
                 )
             }
-
-            Button(
-                enabled = resultBitmap != null,
-                onClick = {
-                    val bitmap = resultBitmap ?: return@Button
-                    scope.launch {
-                        val saved = withContext(Dispatchers.IO) {
-                            saveBitmapToGallery(context, bitmap)
-                        }
-                        lastSaveMessage = context.getString(
-                            if (saved) R.string.saved_to_gallery else R.string.save_failed
-                        )
-                    }
-                }
-            ) {
-                Text(text = stringResource(id = R.string.save_result))
-            }
         }
 
-        ResultCard(resultBitmap)
+        ResultCard(
+            resultBitmap = resultBitmap,
+            onSaveResult = { bitmap ->
+                scope.launch {
+                    val saved = withContext(Dispatchers.IO) {
+                        saveBitmapToGallery(context, bitmap)
+                    }
+                    lastSaveMessage = context.getString(
+                        if (saved) R.string.saved_to_gallery else R.string.save_failed
+                    )
+                }
+            }
+        )
     }
 }
 
@@ -249,52 +249,105 @@ private fun PreviewCard(
     offsetX: Float,
     offsetY: Float
 ) {
-    if (baseBitmap == null) {
-        Text(text = stringResource(id = R.string.no_base_image))
-        return
-    }
-    val baseImage: ImageBitmap = remember(baseBitmap) { baseBitmap.asImageBitmap() }
-    val currentWatermarkBitmap = watermarkBitmap
-    val watermarkImage: ImageBitmap? = remember(currentWatermarkBitmap) { currentWatermarkBitmap?.asImageBitmap() }
-    val density = LocalDensity.current
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors()
     ) {
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            val baseWidthPx = with(density) { maxWidth.toPx() }
-            val scale = if (baseBitmap.width == 0) 1f else baseWidthPx / baseBitmap.width
-            val aspectRatio = baseBitmap.width.toFloat() / baseBitmap.height.toFloat()
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(aspectRatio)
-            ) {
-                Image(
-                    bitmap = baseImage,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit
-                )
-                if (currentWatermarkBitmap != null && watermarkImage != null) {
-                    val widthDp = (currentWatermarkBitmap.width * scale / density.density).dp
-                    val heightDp = (currentWatermarkBitmap.height * scale / density.density).dp
-                    val offsetXDp = (offsetX * scale / density.density).dp
-                    val offsetYDp = (offsetY * scale / density.density).dp
+            Text(
+                text = stringResource(id = R.string.image_preview_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            val base = baseBitmap
+            if (base == null) {
+                Text(text = stringResource(id = R.string.no_base_image))
+            } else {
+                val baseImage: ImageBitmap = remember(base) { base.asImageBitmap() }
+                val currentWatermarkBitmap = watermarkBitmap
+                val watermarkImage: ImageBitmap? = remember(currentWatermarkBitmap) { currentWatermarkBitmap?.asImageBitmap() }
+                val density = LocalDensity.current
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val baseWidthPx = with(density) { maxWidth.toPx() }
+                    val scale = if (base.width == 0) 1f else baseWidthPx / base.width
+                    val aspectRatio = if (base.height == 0) 1f else base.width.toFloat() / base.height.toFloat()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(aspectRatio)
+                    ) {
+                        Image(
+                            bitmap = baseImage,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                        if (currentWatermarkBitmap != null && watermarkImage != null) {
+                            val widthDp = (currentWatermarkBitmap.width * scale / density.density).dp
+                            val heightDp = (currentWatermarkBitmap.height * scale / density.density).dp
+                            val offsetXDp = (offsetX * scale / density.density).dp
+                            val offsetYDp = (offsetY * scale / density.density).dp
+                            Image(
+                                bitmap = watermarkImage,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .offset(offsetXDp, offsetYDp)
+                                    .size(width = widthDp, height = heightDp),
+                                alpha = 0.4f,
+                                contentScale = ContentScale.FillBounds
+                            )
+                        } else {
+                            Text(
+                                text = stringResource(id = R.string.load_watermark_hint),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatermarkPreviewCard(watermarkBitmap: Bitmap?) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(id = R.string.watermark_preview_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            val watermark = watermarkBitmap
+            if (watermark == null) {
+                Text(text = stringResource(id = R.string.no_watermark_loaded))
+            } else {
+                val watermarkImage = remember(watermark) { watermark.asImageBitmap() }
+                val aspectRatio = if (watermark.height == 0) 1f else watermark.width.toFloat() / watermark.height.toFloat()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(aspectRatio)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
                     Image(
                         bitmap = watermarkImage,
                         contentDescription = null,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .offset(offsetXDp, offsetYDp)
-                            .size(width = widthDp, height = heightDp),
-                        alpha = 0.4f,
-                        contentScale = ContentScale.FillBounds
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
                     )
                 }
             }
@@ -303,23 +356,41 @@ private fun PreviewCard(
 }
 
 @Composable
-private fun ResultCard(resultBitmap: Bitmap?) {
-    if (resultBitmap == null) {
-        return
-    }
-    val resultImage = remember(resultBitmap) { resultBitmap.asImageBitmap() }
+private fun ResultCard(
+    resultBitmap: Bitmap?,
+    onSaveResult: (Bitmap) -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors()
     ) {
-        Image(
-            bitmap = resultImage,
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            contentScale = ContentScale.FillWidth
-        )
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(id = R.string.result_preview_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            val result = resultBitmap
+            if (result == null) {
+                Text(text = stringResource(id = R.string.no_result_yet))
+            } else {
+                val resultImage = remember(result) { result.asImageBitmap() }
+                Image(
+                    bitmap = resultImage,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.FillWidth
+                )
+                Button(
+                    modifier = Modifier.align(Alignment.End),
+                    onClick = { onSaveResult(result) }
+                ) {
+                    Text(text = stringResource(id = R.string.save_result))
+                }
+            }
+        }
     }
 }
 

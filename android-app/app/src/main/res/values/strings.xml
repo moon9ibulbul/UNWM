@@ -15,4 +15,10 @@
     <string name="save_failed">Gagal menyimpan hasil</string>
     <string name="reset">Reset</string>
     <string name="no_base_image">Belum ada gambar dasar</string>
+    <string name="image_preview_title">Pratinjau Gambar</string>
+    <string name="watermark_preview_title">Pratinjau Watermark</string>
+    <string name="no_watermark_loaded">Belum ada watermark</string>
+    <string name="load_watermark_hint">Muat watermark untuk melihat pratinjau overlay.</string>
+    <string name="result_preview_title">Hasil</string>
+    <string name="no_result_yet">Belum ada hasil</string>
 </resources>
