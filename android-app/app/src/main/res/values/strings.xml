@@ -28,6 +28,6 @@
     <string name="detection_not_found">Tidak ada watermark terdeteksi.</string>
     <string name="detection_error">Deteksi watermark gagal: %1$s</string>
     <string name="detection_success_hint">Pilih hasil deteksi atau ketuk pratinjau untuk memindahkan watermark.</string>
-    <string name="detection_match_label">Deteksi %1$d (skor %.2f)</string>
+    <string name="detection_match_label">Deteksi %1$d (skor %2$.2f)</string>
     <string name="detection_apply_all">Proses semua deteksi</string>
 </resources>
