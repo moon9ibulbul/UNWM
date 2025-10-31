@@ -3,6 +3,7 @@ pluginManagement {
         google()
         mavenCentral()
         gradlePluginPortal()
+        maven("https://raw.githubusercontent.com/opencv/opencv/4.x/platforms/android/repository")
     }
 }
 
@@ -11,6 +12,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven("https://raw.githubusercontent.com/opencv/opencv/4.x/platforms/android/repository")
     }
 }
 
