@@ -4,6 +4,11 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
         maven("https://raw.githubusercontent.com/opencv/opencv/4.x/platforms/android/repository")
+        maven("https://github.com/QuickBirdEng/opencv-android/raw/main") {
+            content {
+                includeGroup("org.opencv")
+            }
+        }
     }
 }
 
@@ -13,6 +18,11 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven("https://raw.githubusercontent.com/opencv/opencv/4.x/platforms/android/repository")
+        maven("https://github.com/QuickBirdEng/opencv-android/raw/main") {
+            content {
+                includeGroup("org.opencv")
+            }
+        }
     }
 }
 
