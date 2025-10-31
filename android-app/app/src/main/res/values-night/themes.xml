@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.AstralUNWM" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/md_theme_light_primary</item>
+    </style>
+</resources>

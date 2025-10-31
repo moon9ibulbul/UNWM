@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">AstralUNWM</string>
+    <string name="select_image">Pilih Gambar</string>
+    <string name="select_watermark">Pilih Watermark</string>
+    <string name="process_image">Proses</string>
+    <string name="save_result">Simpan</string>
+    <string name="offset_x">Offset X</string>
+    <string name="offset_y">Offset Y</string>
+    <string name="alpha_adjust">Penyesuaian Alpha</string>
+    <string name="transparency_threshold">Ambang Transparansi</string>
+    <string name="opaque_threshold">Ambang Opak</string>
+    <string name="processing">Memproses…</string>
+    <string name="no_image_loaded">Silakan pilih gambar dan watermark terlebih dahulu.</string>
+    <string name="saved_to_gallery">Disimpan ke galeri</string>
+    <string name="save_failed">Gagal menyimpan hasil</string>
+    <string name="reset">Reset</string>
+    <string name="no_base_image">Belum ada gambar dasar</string>
+</resources>

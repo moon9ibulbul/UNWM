@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+if command -v gradle >/dev/null 2>&1; then
+  gradle "$@"
+else
+  echo "Gradle is required to build this project. Install Gradle 8.6 or newer." >&2
+  exit 1
+fi
