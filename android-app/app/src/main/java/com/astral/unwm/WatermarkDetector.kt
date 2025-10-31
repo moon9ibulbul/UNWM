@@ -60,7 +60,7 @@ object WatermarkDetector {
             Core.extractChannel(watermarkMat, alphaChannel, 3)
             Imgproc.threshold(alphaChannel, mask, alphaThreshold, 255.0, Imgproc.THRESH_BINARY)
 
-            Imgproc.findNonZero(mask, nonZero)
+            Core.findNonZero(mask, nonZero)
             if (nonZero.empty()) {
                 return emptyList()
             }
