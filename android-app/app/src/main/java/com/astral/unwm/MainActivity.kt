@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -92,6 +94,7 @@ private data class QueuedImage(
     val displayName: String
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AstralUNWMApp() {
     val context = LocalContext.current
@@ -104,6 +107,7 @@ fun AstralUNWMApp() {
     var alphaAdjust by remember { mutableFloatStateOf(1f) }
     var transparencyThreshold by remember { mutableFloatStateOf(0f) }
     var opaqueThreshold by remember { mutableFloatStateOf(255f) }
+    var detectionThreshold by remember { mutableFloatStateOf(0.9f) }
 
     var isProcessing by remember { mutableStateOf(false) }
     var lastToastMessage by remember { mutableStateOf<String?>(null) }
@@ -204,8 +208,13 @@ fun AstralUNWMApp() {
                     if (base == null) {
                         return@forEach
                     }
+                    val threshold = detectionThreshold
                     val detections = withContext(Dispatchers.Default) {
-                        WatermarkDetector.detect(base, watermark)
+                        WatermarkDetector.detect(
+                            base = base,
+                            watermark = watermark,
+                            matchThreshold = threshold.toDouble()
+                        )
                     }
                     if (detections.isEmpty()) {
                         return@forEach
@@ -304,7 +313,7 @@ fun AstralUNWMApp() {
         }
     }
 
-    LaunchedEffect(baseBitmap, watermarkBitmap) {
+    LaunchedEffect(baseBitmap, watermarkBitmap, detectionThreshold) {
         val base = baseBitmap
         val wm = watermarkBitmap
         detectionResults = emptyList()
@@ -314,7 +323,11 @@ fun AstralUNWMApp() {
             detectionState = DetectionState.Running
             try {
                 val detections = withContext(Dispatchers.Default) {
-                    WatermarkDetector.detect(base, wm)
+                    WatermarkDetector.detect(
+                        base = base,
+                        watermark = wm,
+                        matchThreshold = detectionThreshold.toDouble()
+                    )
                 }
                 detectionResults = detections
                 detectionState = if (detections.isEmpty()) {
@@ -347,26 +360,38 @@ fun AstralUNWMApp() {
             style = MaterialTheme.typography.headlineMedium
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Button(
                 onClick = { pickBaseImage.launch("image/*") },
-                enabled = !isAutomationRunning
+                enabled = !isAutomationRunning,
+                modifier = Modifier.weight(1f, fill = true)
             ) {
                 Text(text = stringResource(id = R.string.select_image))
             }
             Button(
                 onClick = { pickWatermark.launch("image/*") },
-                enabled = !isAutomationRunning
+                enabled = !isAutomationRunning,
+                modifier = Modifier.weight(1f, fill = true)
             ) {
                 Text(text = stringResource(id = R.string.select_watermark))
             }
             OutlinedButton(
                 onClick = { pickBulkImages.launch("image/*") },
-                enabled = !isAutomationRunning
+                enabled = !isAutomationRunning,
+                modifier = Modifier.weight(1f, fill = true)
             ) {
                 Text(text = stringResource(id = R.string.select_images_bulk))
             }
-            if (baseBitmap != null || watermarkBitmap != null || bulkQueue.isNotEmpty()) {
+        }
+        if (baseBitmap != null || watermarkBitmap != null || bulkQueue.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
                 TextButton(onClick = {
                     clearQueue()
                     baseBitmap = null
@@ -414,6 +439,16 @@ fun AstralUNWMApp() {
             }
         )
         WatermarkPreviewCard(watermarkBitmap)
+        SliderCard(
+            title = stringResource(id = R.string.detection_threshold),
+            value = detectionThreshold,
+            onValueChange = { value ->
+                val rounded = (value * 100).roundToInt() / 100f
+                detectionThreshold = rounded.coerceIn(0f, 1f)
+            },
+            valueRange = 0f..1f,
+            valueFormatter = { value -> String.format("%.2f", value) }
+        )
         DetectionCard(
             detectionState = detectionState,
             detectionResults = detectionResults,
@@ -581,9 +616,9 @@ private fun PreviewCard(
             if (base == null) {
                 Text(text = stringResource(id = R.string.no_base_image))
             } else {
-                val baseImage: ImageBitmap = remember(base) { base.asImageBitmap() }
+                val baseImage: ImageBitmap = base.asImageBitmap()
                 val currentWatermarkBitmap = watermarkBitmap
-                val watermarkImage: ImageBitmap? = remember(currentWatermarkBitmap) { currentWatermarkBitmap?.asImageBitmap() }
+                val watermarkImage: ImageBitmap? = currentWatermarkBitmap?.asImageBitmap()
                 val density = LocalDensity.current
                 BoxWithConstraints(
                     modifier = Modifier.fillMaxWidth()
