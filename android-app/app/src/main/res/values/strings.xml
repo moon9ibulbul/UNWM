@@ -19,6 +19,15 @@
     <string name="watermark_preview_title">Pratinjau Watermark</string>
     <string name="no_watermark_loaded">Belum ada watermark</string>
     <string name="load_watermark_hint">Muat watermark untuk melihat pratinjau overlay.</string>
+    <string name="tap_to_place_hint">Ketuk pratinjau untuk memindahkan watermark.</string>
     <string name="result_preview_title">Hasil</string>
     <string name="no_result_yet">Belum ada hasil</string>
+    <string name="detection_card_title">Deteksi Watermark</string>
+    <string name="detection_idle_hint">Muat gambar dan watermark untuk memulai deteksi.</string>
+    <string name="detection_in_progress">Mendeteksi lokasi watermark…</string>
+    <string name="detection_not_found">Tidak ada watermark terdeteksi.</string>
+    <string name="detection_error">Deteksi watermark gagal: %1$s</string>
+    <string name="detection_success_hint">Pilih hasil deteksi atau ketuk pratinjau untuk memindahkan watermark.</string>
+    <string name="detection_match_label">Deteksi %1$d (skor %.2f)</string>
+    <string name="detection_apply_all">Proses semua deteksi</string>
 </resources>

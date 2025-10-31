@@ -8,23 +8,29 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.matchParentSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -32,9 +38,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,10 +58,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,6 +75,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (!org.opencv.android.OpenCVLoader.initLocal() && !org.opencv.android.OpenCVLoader.initDebug()) {
+            Log.e("AstralUNWM", "Failed to initialize OpenCV")
+        }
         setContent {
             AstralUnwmTheme {
                 AstralUNWMApp()
@@ -87,22 +101,65 @@ fun AstralUNWMApp() {
 
     var isProcessing by remember { mutableStateOf(false) }
     var lastSaveMessage by remember { mutableStateOf<String?>(null) }
+    var detectionState by remember { mutableStateOf<DetectionState>(DetectionState.Idle) }
+    var detectionResults by remember { mutableStateOf<List<WatermarkDetection>>(emptyList()) }
+    var selectedDetectionIndex by remember { mutableStateOf<Int?>(null) }
+    var applyAllDetections by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
 
     val pickBaseImage = rememberImagePickerLauncher(context) { bitmap ->
         baseBitmap = bitmap
         resultBitmap = null
+        detectionState = DetectionState.Idle
+        detectionResults = emptyList()
+        selectedDetectionIndex = null
+        applyAllDetections = false
     }
     val pickWatermark = rememberImagePickerLauncher(context) { bitmap ->
         watermarkBitmap = bitmap
         resultBitmap = null
+        detectionState = DetectionState.Idle
+        detectionResults = emptyList()
+        selectedDetectionIndex = null
+        applyAllDetections = false
     }
 
     LaunchedEffect(lastSaveMessage) {
         lastSaveMessage?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             lastSaveMessage = null
+        }
+    }
+
+    LaunchedEffect(baseBitmap, watermarkBitmap) {
+        val base = baseBitmap
+        val wm = watermarkBitmap
+        detectionResults = emptyList()
+        selectedDetectionIndex = null
+        applyAllDetections = false
+        if (base != null && wm != null) {
+            detectionState = DetectionState.Running
+            try {
+                val detections = withContext(Dispatchers.Default) {
+                    WatermarkDetector.detect(base, wm)
+                }
+                detectionResults = detections
+                detectionState = if (detections.isEmpty()) {
+                    DetectionState.NoMatch
+                } else {
+                    val first = detections.first()
+                    offsetX = first.offsetX
+                    offsetY = first.offsetY
+                    selectedDetectionIndex = 0
+                    DetectionState.Success
+                }
+            } catch (e: Exception) {
+                if (e is java.util.concurrent.CancellationException) throw e
+                detectionState = DetectionState.Error(e.message ?: "Unknown error")
+            }
+        } else {
+            detectionState = DetectionState.Idle
         }
     }
 
@@ -132,26 +189,64 @@ fun AstralUNWMApp() {
                     resultBitmap = null
                     offsetX = 0f
                     offsetY = 0f
+                    detectionState = DetectionState.Idle
+                    detectionResults = emptyList()
+                    selectedDetectionIndex = null
+                    applyAllDetections = false
                 }) {
                     Text(text = stringResource(id = R.string.reset))
                 }
             }
         }
 
-        PreviewCard(baseBitmap, watermarkBitmap, offsetX, offsetY)
+        PreviewCard(
+            baseBitmap = baseBitmap,
+            watermarkBitmap = watermarkBitmap,
+            offsetX = offsetX,
+            offsetY = offsetY,
+            detectionResults = detectionResults,
+            selectedDetectionIndex = selectedDetectionIndex,
+            onSetOffset = { x, y ->
+                offsetX = x
+                offsetY = y
+                selectedDetectionIndex = null
+            }
+        )
         WatermarkPreviewCard(watermarkBitmap)
+        DetectionCard(
+            detectionState = detectionState,
+            detectionResults = detectionResults,
+            selectedDetectionIndex = selectedDetectionIndex,
+            applyAllDetections = applyAllDetections,
+            onDetectionSelected = { index ->
+                detectionResults.getOrNull(index)?.let { detection ->
+                    offsetX = detection.offsetX
+                    offsetY = detection.offsetY
+                    selectedDetectionIndex = index
+                }
+            },
+            onApplyAllDetectionsChanged = { checked ->
+                applyAllDetections = checked
+            }
+        )
 
         SliderCard(
             title = stringResource(id = R.string.offset_x),
             value = offsetX,
-            onValueChange = { offsetX = it },
+            onValueChange = {
+                offsetX = it
+                selectedDetectionIndex = null
+            },
             valueRange = -1000f..1000f,
             valueFormatter = { value -> "${value.roundToInt()} px" }
         )
         SliderCard(
             title = stringResource(id = R.string.offset_y),
             value = offsetY,
-            onValueChange = { offsetY = it },
+            onValueChange = {
+                offsetY = it
+                selectedDetectionIndex = null
+            },
             valueRange = -1000f..1000f,
             valueFormatter = { value -> "${value.roundToInt()} px" }
         )
@@ -200,15 +295,30 @@ fun AstralUNWMApp() {
                     isProcessing = true
                     scope.launch {
                         val result = withContext(Dispatchers.Default) {
-                            WatermarkRemover.removeWatermark(
-                                base = base,
-                                watermark = wm,
-                                offsetX = offsetX.roundToInt(),
-                                offsetY = offsetY.roundToInt(),
-                                alphaAdjust = alphaAdjust,
-                                transparencyThreshold = transparencyThreshold.roundToInt(),
-                                opaqueThreshold = opaqueThreshold.roundToInt()
-                            )
+                            val offsetsToApply = mutableListOf<WatermarkDetection>()
+                            val uniqueOffsets = mutableSetOf<Pair<Int, Int>>()
+                            fun addOffset(detection: WatermarkDetection) {
+                                val key = detection.offsetX.roundToInt() to detection.offsetY.roundToInt()
+                                if (uniqueOffsets.add(key)) {
+                                    offsetsToApply.add(detection)
+                                }
+                            }
+                            addOffset(WatermarkDetection(offsetX, offsetY, 1f))
+                            if (applyAllDetections) {
+                                detectionResults.forEach { addOffset(it) }
+                            }
+
+                            offsetsToApply.fold(base) { currentBitmap, detection ->
+                                WatermarkRemover.removeWatermark(
+                                    base = currentBitmap,
+                                    watermark = wm,
+                                    offsetX = detection.offsetX.roundToInt(),
+                                    offsetY = detection.offsetY.roundToInt(),
+                                    alphaAdjust = alphaAdjust,
+                                    transparencyThreshold = transparencyThreshold.roundToInt(),
+                                    opaqueThreshold = opaqueThreshold.roundToInt()
+                                )
+                            }
                         }
                         resultBitmap = result
                         isProcessing = false
@@ -246,7 +356,10 @@ private fun PreviewCard(
     baseBitmap: Bitmap?,
     watermarkBitmap: Bitmap?,
     offsetX: Float,
-    offsetY: Float
+    offsetY: Float,
+    detectionResults: List<WatermarkDetection>,
+    selectedDetectionIndex: Int?,
+    onSetOffset: (Float, Float) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -278,6 +391,15 @@ private fun PreviewCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(aspectRatio)
+                            .pointerInput(base, currentWatermarkBitmap) {
+                                if (currentWatermarkBitmap != null) {
+                                    detectTapGestures { tapOffset ->
+                                        val newOffsetX = (tapOffset.x / scale) - currentWatermarkBitmap.width / 2f
+                                        val newOffsetY = (tapOffset.y / scale) - currentWatermarkBitmap.height / 2f
+                                        onSetOffset(newOffsetX, newOffsetY)
+                                    }
+                                }
+                            }
                     ) {
                         Image(
                             bitmap = baseImage,
@@ -300,12 +422,115 @@ private fun PreviewCard(
                                 alpha = 0.4f,
                                 contentScale = ContentScale.FillBounds
                             )
+                            Canvas(modifier = Modifier.matchParentSize()) {
+                                val highlightColor = MaterialTheme.colorScheme.primary
+                                val secondaryColor = MaterialTheme.colorScheme.outline
+                                val strokeWidth = 2.dp.toPx()
+                                detectionResults.forEachIndexed { index, detection ->
+                                    val color = if (index == selectedDetectionIndex) highlightColor else secondaryColor
+                                    val left = detection.offsetX * scale
+                                    val top = detection.offsetY * scale
+                                    val rectWidth = currentWatermarkBitmap.width * scale
+                                    val rectHeight = currentWatermarkBitmap.height * scale
+                                    drawRect(
+                                        color = color,
+                                        topLeft = androidx.compose.ui.geometry.Offset(left, top),
+                                        size = androidx.compose.ui.geometry.Size(rectWidth, rectHeight),
+                                        style = Stroke(width = strokeWidth)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = stringResource(id = R.string.tap_to_place_hint),
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         } else {
                             Text(
                                 text = stringResource(id = R.string.load_watermark_hint),
                                 modifier = Modifier
                                     .align(Alignment.BottomStart)
                                     .padding(8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetectionCard(
+    detectionState: DetectionState,
+    detectionResults: List<WatermarkDetection>,
+    selectedDetectionIndex: Int?,
+    applyAllDetections: Boolean,
+    onDetectionSelected: (Int) -> Unit,
+    onApplyAllDetectionsChanged: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(id = R.string.detection_card_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            when (detectionState) {
+                DetectionState.Idle -> {
+                    Text(text = stringResource(id = R.string.detection_idle_hint))
+                }
+                DetectionState.Running -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        Text(
+                            text = stringResource(id = R.string.detection_in_progress),
+                            modifier = Modifier.padding(start = 12.dp)
+                        )
+                    }
+                }
+                DetectionState.NoMatch -> {
+                    Text(text = stringResource(id = R.string.detection_not_found))
+                }
+                is DetectionState.Error -> {
+                    Text(text = stringResource(id = R.string.detection_error, detectionState.message))
+                }
+                DetectionState.Success -> {
+                    Text(text = stringResource(id = R.string.detection_success_hint))
+                    detectionResults.forEachIndexed { index, detection ->
+                        val label = stringResource(
+                            id = R.string.detection_match_label,
+                            index + 1,
+                            detection.score.toDouble()
+                        )
+                        if (index == selectedDetectionIndex) {
+                            Button(onClick = { onDetectionSelected(index) }) {
+                                Text(text = label)
+                            }
+                        } else {
+                            OutlinedButton(onClick = { onDetectionSelected(index) }) {
+                                Text(text = label)
+                            }
+                        }
+                    }
+                    if (detectionResults.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(
+                                checked = applyAllDetections,
+                                onCheckedChange = onApplyAllDetectionsChanged
+                            )
+                            Text(
+                                text = stringResource(id = R.string.detection_apply_all),
+                                modifier = Modifier.padding(start = 8.dp)
                             )
                         }
                     }
