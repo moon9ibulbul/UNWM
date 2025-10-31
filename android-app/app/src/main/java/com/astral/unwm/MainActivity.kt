@@ -58,7 +58,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import java.io.InputStream
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -467,8 +466,10 @@ private fun rememberImagePickerLauncher(
             onBitmapLoaded(null)
             return@rememberLauncherForActivityResult
         }
-        val bitmap = context.contentResolver.openInputStream(uri)?.use(InputStream::buffered)?.use { input ->
-            BitmapFactory.decodeStream(input)?.copy(Bitmap.Config.ARGB_8888, true)
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            inputStream.buffered().use { bufferedStream ->
+                BitmapFactory.decodeStream(bufferedStream)?.copy(Bitmap.Config.ARGB_8888, true)
+            }
         }
         onBitmapLoaded(bitmap)
     }
