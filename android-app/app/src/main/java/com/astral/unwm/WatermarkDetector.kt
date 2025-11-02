@@ -41,8 +41,6 @@ object WatermarkDetector {
         val watermarkMat = Mat()
         val baseGray = Mat()
         val watermarkGray = Mat()
-        val baseGrayFloat = Mat()
-        val watermarkGrayFloat = Mat()
         val baseBgr = Mat()
         val watermarkBgr = Mat()
         val alphaChannel = Mat()
@@ -50,7 +48,6 @@ object WatermarkDetector {
         val nonZero = Mat()
         val baseEdges = Mat()
         var watermarkGrayRoi = Mat()
-        var watermarkGrayRoiFloat = Mat()
         var watermarkMaskRoi = Mat()
         var watermarkBgrRoi = Mat()
         var watermarkAlphaRoi = Mat()
@@ -65,8 +62,6 @@ object WatermarkDetector {
 
             Imgproc.cvtColor(baseMat, baseGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(watermarkMat, watermarkGray, Imgproc.COLOR_RGBA2GRAY)
-            baseGray.convertTo(baseGrayFloat, CvType.CV_32F, 1.0 / 255.0)
-            watermarkGray.convertTo(watermarkGrayFloat, CvType.CV_32F, 1.0 / 255.0)
             Imgproc.cvtColor(baseMat, baseBgr, Imgproc.COLOR_RGBA2BGR)
             Imgproc.cvtColor(watermarkMat, watermarkBgr, Imgproc.COLOR_RGBA2BGR)
             Core.extractChannel(watermarkMat, alphaChannel, 3)
@@ -78,7 +73,6 @@ object WatermarkDetector {
             }
             val roiRect: Rect = Imgproc.boundingRect(nonZero)
             watermarkGrayRoi = Mat(watermarkGray, roiRect).clone()
-            watermarkGrayRoiFloat = Mat(watermarkGrayFloat, roiRect).clone()
             watermarkMaskRoi = Mat(mask, roiRect).clone()
             watermarkBgrRoi = Mat(watermarkBgr, roiRect).clone()
             watermarkAlphaRoi = Mat(alphaChannel, roiRect).clone()
@@ -125,8 +119,8 @@ object WatermarkDetector {
 
             resultGray = Mat()
             Imgproc.matchTemplate(
-                baseGrayFloat,
-                watermarkGrayRoiFloat,
+                baseGray,
+                watermarkGrayRoi,
                 resultGray,
                 Imgproc.TM_CCORR_NORMED,
                 watermarkMaskRoi
@@ -135,26 +129,20 @@ object WatermarkDetector {
             colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
             for (channel in 0 until 3) {
                 val baseChannel = Mat()
-                val baseChannelFloat = Mat()
                 val watermarkChannel = Mat()
-                val watermarkChannelFloat = Mat()
                 val channelResult = Mat()
                 Core.extractChannel(baseBgr, baseChannel, channel)
                 Core.extractChannel(watermarkBgrRoi, watermarkChannel, channel)
-                baseChannel.convertTo(baseChannelFloat, CvType.CV_32F, 1.0 / 255.0)
-                watermarkChannel.convertTo(watermarkChannelFloat, CvType.CV_32F, 1.0 / 255.0)
                 Imgproc.matchTemplate(
-                    baseChannelFloat,
-                    watermarkChannelFloat,
+                    baseChannel,
+                    watermarkChannel,
                     channelResult,
                     Imgproc.TM_CCORR_NORMED,
                     watermarkMaskRoi
                 )
                 Core.add(colorAccumulation, channelResult, colorAccumulation)
                 baseChannel.release()
-                baseChannelFloat.release()
                 watermarkChannel.release()
-                watermarkChannelFloat.release()
                 channelResult.release()
             }
             Core.multiply(colorAccumulation, Scalar(1.0 / 3.0), colorAccumulation)
@@ -227,15 +215,12 @@ object WatermarkDetector {
             watermarkMat.release()
             baseGray.release()
             watermarkGray.release()
-            baseGrayFloat.release()
-            watermarkGrayFloat.release()
             baseBgr.release()
             watermarkBgr.release()
             alphaChannel.release()
             mask.release()
             nonZero.release()
             watermarkGrayRoi.release()
-            watermarkGrayRoiFloat.release()
             watermarkMaskRoi.release()
             watermarkBgrRoi.release()
             watermarkAlphaRoi.release()
