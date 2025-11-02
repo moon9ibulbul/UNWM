@@ -4,6 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Paint
+import android.graphics.ColorMatrix as AndroidColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -19,6 +23,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,17 +41,23 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.annotation.StringRes
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,18 +72,28 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.consume
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -94,9 +116,38 @@ private data class QueuedImage(
     val displayName: String
 )
 
-@OptIn(ExperimentalLayoutApi::class)
+private enum class AppTab(@StringRes val titleRes: Int) {
+    Unwatermarker(R.string.tab_unwatermarker),
+    Extractor(R.string.tab_extractor)
+}
+
 @Composable
 fun AstralUNWMApp() {
+    var selectedTab by remember { mutableStateOf(AppTab.Unwatermarker) }
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab.ordinal) {
+            AppTab.values().forEach { tab ->
+                Tab(
+                    selected = tab == selectedTab,
+                    onClick = { selectedTab = tab },
+                    text = { Text(text = stringResource(id = tab.titleRes)) }
+                )
+            }
+        }
+        when (selectedTab) {
+            AppTab.Unwatermarker -> {
+                UnwatermarkerScreen()
+            }
+            AppTab.Extractor -> {
+                ExtractorScreen()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun UnwatermarkerScreen() {
     val context = LocalContext.current
     var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var watermarkBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -590,6 +641,756 @@ fun AstralUNWMApp() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ExtractorScreen() {
+    val context = LocalContext.current
+    var originalBaseBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var originalOverlayBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var overlayBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var overlayOffsetX by remember { mutableFloatStateOf(0f) }
+    var overlayOffsetY by remember { mutableFloatStateOf(0f) }
+    var extractionX by remember { mutableFloatStateOf(0f) }
+    var extractionY by remember { mutableFloatStateOf(0f) }
+    var extractionWidth by remember { mutableFloatStateOf(0f) }
+    var extractionHeight by remember { mutableFloatStateOf(0f) }
+    var applyContrastStretch by remember { mutableStateOf(false) }
+    var defaultPosition by remember { mutableStateOf(DefaultOverlayPosition.TopLeft) }
+    var overlayFilter by remember { mutableStateOf(OverlayPreviewFilter.None) }
+    var blendModeOption by remember { mutableStateOf(OverlayBlendModeOption.Normal) }
+    var resultFilter by remember { mutableStateOf(ResultFilterOption.None) }
+    var backgroundColorBase by remember { mutableStateOf(Color.Black) }
+    var backgroundColorOverlay by remember { mutableStateOf(Color.White) }
+    var extractedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isExtracting by remember { mutableStateOf(false) }
+    var lastToastMessage by remember { mutableStateOf<String?>(null) }
+    var hasManualOverlayPosition by remember { mutableStateOf(false) }
+
+    val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+
+    fun clampOverlayOffset(base: Bitmap?, overlay: Bitmap?) {
+        val baseImage = base ?: return
+        val overlayImage = overlay ?: return
+        val maxX = max(0, baseImage.width - overlayImage.width)
+        val maxY = max(0, baseImage.height - overlayImage.height)
+        overlayOffsetX = overlayOffsetX.coerceIn(0f, maxX.toFloat())
+        overlayOffsetY = overlayOffsetY.coerceIn(0f, maxY.toFloat())
+    }
+
+    fun clampExtractionWindow(base: Bitmap?) {
+        val baseImage = base ?: return
+        extractionWidth = extractionWidth.coerceIn(1f, baseImage.width.toFloat())
+        extractionHeight = extractionHeight.coerceIn(1f, baseImage.height.toFloat())
+        val maxX = max(0f, baseImage.width.toFloat() - extractionWidth)
+        val maxY = max(0f, baseImage.height.toFloat() - extractionHeight)
+        extractionX = extractionX.coerceIn(0f, maxX)
+        extractionY = extractionY.coerceIn(0f, maxY)
+    }
+
+    fun applyDefaultPosition() {
+        val baseImage = baseBitmap ?: return
+        val overlayImage = overlayBitmap ?: return
+        val (defaultX, defaultY) = defaultPosition.resolve(baseImage, overlayImage)
+        overlayOffsetX = defaultX.toFloat()
+        overlayOffsetY = defaultY.toFloat()
+        clampOverlayOffset(baseImage, overlayImage)
+        if (extractionWidth <= 0f || extractionHeight <= 0f) {
+            extractionWidth = min(300f, baseImage.width.toFloat())
+            extractionHeight = min(150f, baseImage.height.toFloat())
+        }
+        extractionX = overlayOffsetX.coerceIn(0f, max(0f, baseImage.width.toFloat() - extractionWidth))
+        extractionY = overlayOffsetY.coerceIn(0f, max(0f, baseImage.height.toFloat() - extractionHeight))
+    }
+
+    val pickBaseImage = rememberImagePickerLauncher(context) { bitmap ->
+        if (bitmap == null) {
+            originalBaseBitmap = null
+            baseBitmap = null
+            extractedBitmap = null
+            hasManualOverlayPosition = false
+            return@rememberImagePickerLauncher
+        }
+        originalBaseBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        extractedBitmap = null
+        extractionWidth = 0f
+        extractionHeight = 0f
+        extractionX = 0f
+        extractionY = 0f
+        hasManualOverlayPosition = false
+    }
+
+    val pickOverlayImage = rememberImagePickerLauncher(context) { bitmap ->
+        if (bitmap == null) {
+            originalOverlayBitmap = null
+            overlayBitmap = null
+            extractedBitmap = null
+            hasManualOverlayPosition = false
+            return@rememberImagePickerLauncher
+        }
+        originalOverlayBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        extractedBitmap = null
+        hasManualOverlayPosition = false
+        val baseImage = baseBitmap ?: originalBaseBitmap
+        if (baseImage != null && originalOverlayBitmap != null) {
+            val (defaultX, defaultY) = defaultPosition.resolveDimensions(
+                baseWidth = baseImage.width,
+                baseHeight = baseImage.height,
+                overlayWidth = originalOverlayBitmap!!.width,
+                overlayHeight = originalOverlayBitmap!!.height
+            )
+            overlayOffsetX = defaultX.toFloat()
+            overlayOffsetY = defaultY.toFloat()
+        }
+    }
+
+    LaunchedEffect(applyContrastStretch, originalBaseBitmap) {
+        val original = originalBaseBitmap
+        baseBitmap = if (original != null) {
+            withContext(Dispatchers.Default) {
+                if (applyContrastStretch) WatermarkExtractor.contrastStretch(original) else original
+            }
+        } else {
+            null
+        }
+        if (baseBitmap != null && extractionWidth <= 0f && extractionHeight <= 0f) {
+            extractionWidth = min(300f, baseBitmap!!.width.toFloat())
+            extractionHeight = min(150f, baseBitmap!!.height.toFloat())
+        }
+        clampExtractionWindow(baseBitmap)
+    }
+
+    LaunchedEffect(applyContrastStretch, originalOverlayBitmap) {
+        val original = originalOverlayBitmap
+        overlayBitmap = if (original != null) {
+            withContext(Dispatchers.Default) {
+                if (applyContrastStretch) WatermarkExtractor.contrastStretch(original) else original
+            }
+        } else {
+            null
+        }
+        clampOverlayOffset(baseBitmap, overlayBitmap)
+    }
+
+    LaunchedEffect(baseBitmap, overlayBitmap) {
+        clampOverlayOffset(baseBitmap, overlayBitmap)
+        clampExtractionWindow(baseBitmap)
+        val baseImage = baseBitmap
+        val overlayImage = overlayBitmap
+        if (!hasManualOverlayPosition && baseImage != null && overlayImage != null) {
+            applyDefaultPosition()
+        }
+    }
+
+    LaunchedEffect(lastToastMessage) {
+        lastToastMessage?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            lastToastMessage = null
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(text = stringResource(id = R.string.extractor_contrast_stretch))
+                    Switch(
+                        checked = applyContrastStretch,
+                        onCheckedChange = {
+                            applyContrastStretch = it
+                        }
+                    )
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(onClick = { pickBaseImage.launch("image/*") }) {
+                        Text(text = stringResource(id = R.string.extractor_load_image1))
+                    }
+                    Button(onClick = { pickOverlayImage.launch("image/*") }) {
+                        Text(text = stringResource(id = R.string.extractor_load_image2))
+                    }
+                }
+                SettingDropdown(
+                    label = stringResource(id = R.string.extractor_default_position),
+                    options = DefaultOverlayPosition.values(),
+                    selected = defaultPosition,
+                    optionLabel = { stringResource(id = it.labelRes) },
+                    onOptionSelected = {
+                        defaultPosition = it
+                        hasManualOverlayPosition = false
+                        applyDefaultPosition()
+                    }
+                )
+                SettingDropdown(
+                    label = stringResource(id = R.string.extractor_preview_filter),
+                    options = OverlayPreviewFilter.values(),
+                    selected = overlayFilter,
+                    optionLabel = { stringResource(id = it.labelRes) },
+                    onOptionSelected = { overlayFilter = it }
+                )
+                SettingDropdown(
+                    label = stringResource(id = R.string.extractor_preview_blend_mode),
+                    options = OverlayBlendModeOption.values(),
+                    selected = blendModeOption,
+                    optionLabel = { stringResource(id = it.labelRes) },
+                    onOptionSelected = { blendModeOption = it }
+                )
+            }
+        }
+
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                ColorPickerField(
+                    label = stringResource(id = R.string.extractor_background_color1),
+                    color = backgroundColorBase,
+                    onColorChange = { backgroundColorBase = it }
+                )
+                ColorPickerField(
+                    label = stringResource(id = R.string.extractor_background_color2),
+                    color = backgroundColorOverlay,
+                    onColorChange = { backgroundColorOverlay = it }
+                )
+            }
+        }
+
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = stringResource(id = R.string.extractor_preview_card_title),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                val base = baseBitmap
+                if (base == null) {
+                    Text(text = stringResource(id = R.string.extractor_missing_images))
+                } else {
+                    val baseImage = base.asImageBitmap()
+                    val overlayImage = overlayBitmap?.asImageBitmap()
+                    val density = LocalDensity.current
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val baseWidthPx = with(density) { maxWidth.toPx() }
+                        val scale = if (base.width == 0) 1f else baseWidthPx / base.width
+                        val aspectRatio = if (base.height == 0) 1f else base.width.toFloat() / base.height.toFloat()
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(aspectRatio)
+                        ) {
+                            Image(
+                                bitmap = baseImage,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit
+                            )
+                            val overlayBitmapLocal = overlayBitmap
+                            if (overlayImage != null && overlayBitmapLocal != null) {
+                                val overlayWidthDp = (overlayBitmapLocal.width * scale / density.density).dp
+                                val overlayHeightDp = (overlayBitmapLocal.height * scale / density.density).dp
+                                val offsetXDp = (overlayOffsetX * scale / density.density).dp
+                                val offsetYDp = (overlayOffsetY * scale / density.density).dp
+                                Image(
+                                    bitmap = overlayImage,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .offset(offsetXDp, offsetYDp)
+                                        .size(width = overlayWidthDp, height = overlayHeightDp)
+                                        .pointerInput(overlayBitmapLocal, scale) {
+                                            detectDragGestures { change, dragAmount ->
+                                                change.consume()
+                                                val deltaX = dragAmount.x / scale
+                                                val deltaY = dragAmount.y / scale
+                                                hasManualOverlayPosition = true
+                                                overlayOffsetX = (overlayOffsetX + deltaX)
+                                                overlayOffsetY = (overlayOffsetY + deltaY)
+                                                clampOverlayOffset(baseBitmap, overlayBitmap)
+                                            }
+                                        }
+                                        .graphicsLayer {
+                                            alpha = 0.6f
+                                            blendMode = blendModeOption.blendMode
+                                        },
+                                    colorFilter = overlayFilter.colorFilter(),
+                                    contentScale = ContentScale.FillBounds
+                                )
+                            }
+                            val rectWidth = extractionWidth * scale
+                            val rectHeight = extractionHeight * scale
+                            if (rectWidth > 0f && rectHeight > 0f) {
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    drawRect(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        topLeft = androidx.compose.ui.geometry.Offset(
+                                            extractionX * scale,
+                                            extractionY * scale
+                                        ),
+                                        size = androidx.compose.ui.geometry.Size(rectWidth, rectHeight),
+                                        style = Stroke(width = 2.dp.toPx())
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (overlayBitmap != null) {
+                        Text(
+                            text = stringResource(id = R.string.extractor_overlay_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        val base = baseBitmap
+        if (base != null) {
+            Card {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.extractor_window_card_title),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    SliderCard(
+                        title = stringResource(id = R.string.extractor_window_position_x),
+                        value = extractionX,
+                        onValueChange = {
+                            extractionX = it
+                            clampExtractionWindow(baseBitmap)
+                        },
+                        valueRange = 0f..base.width.toFloat(),
+                        valueFormatter = { value -> value.roundToInt().toString() },
+                        enabled = true
+                    )
+                    SliderCard(
+                        title = stringResource(id = R.string.extractor_window_position_y),
+                        value = extractionY,
+                        onValueChange = {
+                            extractionY = it
+                            clampExtractionWindow(baseBitmap)
+                        },
+                        valueRange = 0f..base.height.toFloat(),
+                        valueFormatter = { value -> value.roundToInt().toString() },
+                        enabled = true
+                    )
+                    SliderCard(
+                        title = stringResource(id = R.string.extractor_window_width),
+                        value = extractionWidth,
+                        onValueChange = {
+                            extractionWidth = it
+                            clampExtractionWindow(baseBitmap)
+                        },
+                        valueRange = 1f..base.width.toFloat(),
+                        valueFormatter = { value -> value.roundToInt().toString() },
+                        enabled = true
+                    )
+                    SliderCard(
+                        title = stringResource(id = R.string.extractor_window_height),
+                        value = extractionHeight,
+                        onValueChange = {
+                            extractionHeight = it
+                            clampExtractionWindow(baseBitmap)
+                        },
+                        valueRange = 1f..base.height.toFloat(),
+                        valueFormatter = { value -> value.roundToInt().toString() },
+                        enabled = true
+                    )
+                }
+            }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = {
+                    val baseImage = baseBitmap
+                    val overlayImage = overlayBitmap
+                    if (baseImage == null || overlayImage == null) {
+                        lastToastMessage = context.getString(R.string.extractor_missing_images)
+                        return@Button
+                    }
+                    val window = Rect(
+                        extractionX.roundToInt(),
+                        extractionY.roundToInt(),
+                        (extractionX + extractionWidth).roundToInt(),
+                        (extractionY + extractionHeight).roundToInt()
+                    )
+                    isExtracting = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.Default) {
+                            WatermarkExtractor.extract(
+                                base = baseImage,
+                                overlay = overlayImage,
+                                offsetX = overlayOffsetX.roundToInt(),
+                                offsetY = overlayOffsetY.roundToInt(),
+                                window = window,
+                                backgroundBase = backgroundColorBase.toArgb(),
+                                backgroundOverlay = backgroundColorOverlay.toArgb()
+                            )
+                        }
+                        isExtracting = false
+                        if (result == null) {
+                            lastToastMessage = context.getString(R.string.extractor_toast_extract_failed)
+                        } else {
+                            extractedBitmap = result
+                        }
+                    }
+                },
+                enabled = !isExtracting
+            ) {
+                if (isExtracting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                }
+                Text(
+                    text = if (isExtracting) {
+                        stringResource(id = R.string.extractor_extracting)
+                    } else {
+                        stringResource(id = R.string.extractor_extract_button)
+                    }
+                )
+            }
+            val result = extractedBitmap
+            if (result != null) {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val bitmapForSave = withContext(Dispatchers.Default) {
+                                resultFilter.applyForSaving(result)
+                            }
+                            val saved = withContext(Dispatchers.IO) {
+                                saveBitmapToGallery(context, bitmapForSave)
+                            }
+                            lastToastMessage = context.getString(
+                                if (saved) R.string.extractor_toast_saved else R.string.extractor_toast_save_failed
+                            )
+                        }
+                    }
+                ) {
+                    Text(text = stringResource(id = R.string.extractor_save_button))
+                }
+            }
+        }
+
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = stringResource(id = R.string.extractor_result_card_title),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                SettingDropdown(
+                    label = stringResource(id = R.string.extractor_result_filter),
+                    options = ResultFilterOption.values(),
+                    selected = resultFilter,
+                    optionLabel = { stringResource(id = it.labelRes) },
+                    onOptionSelected = { resultFilter = it }
+                )
+                val result = extractedBitmap
+                if (result == null) {
+                    Text(text = stringResource(id = R.string.extractor_no_result))
+                } else {
+                    val image = result.asImageBitmap()
+                    Image(
+                        bitmap = image,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentScale = ContentScale.Fit,
+                        colorFilter = resultFilter.colorFilter()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> SettingDropdown(
+    label: String,
+    options: Array<T>,
+    selected: T,
+    optionLabel: (T) -> String,
+    onOptionSelected: (T) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(text = optionLabel(selected))
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(text = optionLabel(option)) },
+                        onClick = {
+                            onOptionSelected(option)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColorPickerField(
+    label: String,
+    color: Color,
+    onColorChange: (Color) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                    .background(color, RoundedCornerShape(8.dp))
+            )
+            Text(
+                text = String.format("#%06X", color.toArgb() and 0xFFFFFF),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        var red by remember(color) { mutableFloatStateOf(color.red * 255f) }
+        var green by remember(color) { mutableFloatStateOf(color.green * 255f) }
+        var blue by remember(color) { mutableFloatStateOf(color.blue * 255f) }
+        ColorChannelSlider(
+            label = stringResource(id = R.string.extractor_channel_red),
+            value = red,
+            onValueChange = { value ->
+                red = value
+                onColorChange(
+                    Color(
+                        red = red / 255f,
+                        green = green / 255f,
+                        blue = blue / 255f,
+                        alpha = 1f
+                    )
+                )
+            }
+        )
+        ColorChannelSlider(
+            label = stringResource(id = R.string.extractor_channel_green),
+            value = green,
+            onValueChange = { value ->
+                green = value
+                onColorChange(
+                    Color(
+                        red = red / 255f,
+                        green = green / 255f,
+                        blue = blue / 255f,
+                        alpha = 1f
+                    )
+                )
+            }
+        )
+        ColorChannelSlider(
+            label = stringResource(id = R.string.extractor_channel_blue),
+            value = blue,
+            onValueChange = { value ->
+                blue = value
+                onColorChange(
+                    Color(
+                        red = red / 255f,
+                        green = green / 255f,
+                        blue = blue / 255f,
+                        alpha = 1f
+                    )
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun ColorChannelSlider(
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = "$label: ${value.roundToInt()}")
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = 0f..255f,
+            steps = 254,
+            colors = SliderDefaults.colors(
+                activeTrackColor = MaterialTheme.colorScheme.primary
+            )
+        )
+    }
+}
+
+private enum class DefaultOverlayPosition(@StringRes val labelRes: Int) {
+    TopLeft(R.string.extractor_position_top_left),
+    TopRight(R.string.extractor_position_top_right),
+    Center(R.string.extractor_position_center),
+    BottomLeft(R.string.extractor_position_bottom_left),
+    BottomRight(R.string.extractor_position_bottom_right);
+
+    fun resolve(base: Bitmap, overlay: Bitmap): Pair<Int, Int> {
+        return resolveDimensions(base.width, base.height, overlay.width, overlay.height)
+    }
+
+    fun resolveDimensions(
+        baseWidth: Int,
+        baseHeight: Int,
+        overlayWidth: Int,
+        overlayHeight: Int
+    ): Pair<Int, Int> {
+        val rawX = when (this) {
+            TopLeft, BottomLeft -> 0
+            TopRight, BottomRight -> baseWidth - overlayWidth
+            Center -> (baseWidth - overlayWidth) / 2
+        }
+        val rawY = when (this) {
+            TopLeft, TopRight -> 0
+            BottomLeft, BottomRight -> baseHeight - overlayHeight
+            Center -> (baseHeight - overlayHeight) / 2
+        }
+        val maxX = max(0, baseWidth - overlayWidth)
+        val maxY = max(0, baseHeight - overlayHeight)
+        return rawX.coerceIn(0, maxX) to rawY.coerceIn(0, maxY)
+    }
+}
+
+private enum class OverlayPreviewFilter(@StringRes val labelRes: Int) {
+    None(R.string.extractor_filter_none),
+    Invert(R.string.extractor_filter_invert),
+    InvertBrightness(R.string.extractor_filter_invert_brightness),
+    Grayscale(R.string.extractor_filter_grayscale);
+
+    fun colorFilter(): ColorFilter? = colorMatrix()?.let { ColorFilter.colorMatrix(it) }
+
+    fun colorMatrix(): ColorMatrix? = when (this) {
+        None -> null
+        Invert -> invertColorMatrix()
+        InvertBrightness -> invertBrightnessMatrix()
+        Grayscale -> grayscaleMatrix()
+    }
+}
+
+private enum class OverlayBlendModeOption(@StringRes val labelRes: Int, val blendMode: BlendMode) {
+    Normal(R.string.extractor_blend_normal, BlendMode.SrcOver),
+    Difference(R.string.extractor_blend_difference, BlendMode.Difference),
+    Darken(R.string.extractor_blend_darken, BlendMode.Darken),
+    Lighten(R.string.extractor_blend_lighten, BlendMode.Lighten),
+    HardLight(R.string.extractor_blend_hard_light, BlendMode.Hardlight)
+}
+
+private enum class ResultFilterOption(@StringRes val labelRes: Int) {
+    None(R.string.extractor_result_filter_none),
+    Grayscale(R.string.extractor_result_filter_grayscale),
+    Invert(R.string.extractor_result_filter_invert),
+    Sepia(R.string.extractor_result_filter_sepia);
+
+    fun colorFilter(): ColorFilter? = colorMatrix()?.let { ColorFilter.colorMatrix(it) }
+
+    fun colorMatrix(): ColorMatrix? = when (this) {
+        None -> null
+        Grayscale -> grayscaleMatrix()
+        Invert -> invertColorMatrix()
+        Sepia -> sepiaMatrix()
+    }
+}
+
+private fun ResultFilterOption.applyForSaving(bitmap: Bitmap): Bitmap {
+    val matrix = colorMatrix() ?: return bitmap
+    val result = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(result)
+    val paint = Paint().apply {
+        colorFilter = ColorMatrixColorFilter(AndroidColorMatrix(matrix.values))
+    }
+    canvas.drawBitmap(bitmap, 0f, 0f, paint)
+    return result
+}
+
+private fun invertColorMatrix(): ColorMatrix {
+    return ColorMatrix(
+        floatArrayOf(
+            -1f, 0f, 0f, 0f, 255f,
+            0f, -1f, 0f, 0f, 255f,
+            0f, 0f, -1f, 0f, 255f,
+            0f, 0f, 0f, 1f, 0f
+        )
+    )
+}
+
+private fun grayscaleMatrix(): ColorMatrix {
+    return ColorMatrix(
+        floatArrayOf(
+            0.2126f, 0.7152f, 0.0722f, 0f, 0f,
+            0.2126f, 0.7152f, 0.0722f, 0f, 0f,
+            0.2126f, 0.7152f, 0.0722f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+    )
+}
+
+private fun invertBrightnessMatrix(): ColorMatrix {
+    val matrix = ColorMatrix()
+    matrix.setToSaturation(0f)
+    matrix.postConcat(invertColorMatrix())
+    return matrix
+}
+
+private fun sepiaMatrix(): ColorMatrix {
+    return ColorMatrix(
+        floatArrayOf(
+            0.393f, 0.769f, 0.189f, 0f, 0f,
+            0.349f, 0.686f, 0.168f, 0f, 0f,
+            0.272f, 0.534f, 0.131f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+    )
+}
+
 @Composable
 private fun PreviewCard(
     baseBitmap: Bitmap?,
@@ -954,7 +1755,8 @@ private fun SliderCard(
     onValueChange: (Float) -> Unit,
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int = 0,
-    valueFormatter: (Float) -> String
+    valueFormatter: (Float) -> String,
+    enabled: Boolean = true
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -967,6 +1769,7 @@ private fun SliderCard(
                 onValueChange = onValueChange,
                 valueRange = valueRange,
                 steps = steps,
+                enabled = enabled,
                 colors = SliderDefaults.colors(
                     activeTrackColor = MaterialTheme.colorScheme.primary
                 )
