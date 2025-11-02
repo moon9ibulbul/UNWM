@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
@@ -903,6 +904,7 @@ fun ExtractorScreen() {
                             )
                             val overlayBitmapLocal = overlayBitmap
                             if (overlayImage != null && overlayBitmapLocal != null) {
+                                val highlightColor = MaterialTheme.colorScheme.primary
                                 Canvas(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -921,13 +923,15 @@ fun ExtractorScreen() {
                                     val overlayHeightPx = overlayBitmapLocal.height * scale
                                     val offsetXPx = overlayOffsetX * scale
                                     val offsetYPx = overlayOffsetY * scale
-                                    drawImage(
+                                    val destinationRect = androidx.compose.ui.geometry.Rect(
+                                        offsetXPx,
+                                        offsetYPx,
+                                        offsetXPx + overlayWidthPx,
+                                        offsetYPx + overlayHeightPx
+                                    )
+                                    drawImageRect(
                                         image = overlayImage,
-                                        topLeft = androidx.compose.ui.geometry.Offset(offsetXPx, offsetYPx),
-                                        dstSize = androidx.compose.ui.unit.IntSize(
-                                            overlayWidthPx.roundToInt(),
-                                            overlayHeightPx.roundToInt()
-                                        ),
+                                        dstRect = destinationRect,
                                         alpha = 0.6f,
                                         colorFilter = overlayFilter.colorFilter(),
                                         blendMode = blendModeOption.blendMode
@@ -939,7 +943,7 @@ fun ExtractorScreen() {
                             if (rectWidth > 0f && rectHeight > 0f) {
                                 Canvas(modifier = Modifier.fillMaxSize()) {
                                     drawRect(
-                                        color = MaterialTheme.colorScheme.primary,
+                                        color = highlightColor,
                                         topLeft = androidx.compose.ui.geometry.Offset(
                                             extractionX * scale,
                                             extractionY * scale
@@ -1137,7 +1141,7 @@ private fun <T> SettingDropdown(
     label: String,
     options: Array<T>,
     selected: T,
-    optionLabel: (T) -> @StringRes Int,
+    optionLabel: (T) -> Int,
     onOptionSelected: (T) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1152,12 +1156,14 @@ private fun <T> SettingDropdown(
                 onClick = { expanded = true },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(text = stringResource(id = optionLabel(selected)))
+                @StringRes val selectedLabel = optionLabel(selected)
+                Text(text = stringResource(id = selectedLabel))
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
+                    @StringRes val optionLabelRes = optionLabel(option)
                     DropdownMenuItem(
-                        text = { Text(text = stringResource(id = optionLabel(option))) },
+                        text = { Text(text = stringResource(id = optionLabelRes)) },
                         onClick = {
                             onOptionSelected(option)
                             expanded = false
