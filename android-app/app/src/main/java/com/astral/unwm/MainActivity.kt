@@ -26,7 +26,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -92,6 +91,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.awaitEachGesture
+import androidx.compose.ui.input.pointer.awaitFirstDown
+import androidx.compose.ui.input.pointer.awaitPointerEvent
+import androidx.compose.ui.input.pointer.consumePositionChange
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
@@ -1651,37 +1655,6 @@ private fun PreviewCard(
                                     }
                                 }
                             }
-                            .pointerInput(currentWatermarkBitmap, scale, previewScale) {
-                                if (currentWatermarkBitmap != null) {
-                                    detectDragGestures(
-                                        onDragStart = {
-                                            dragOffsetX = offsetX
-                                            dragOffsetY = offsetY
-                                        }
-                                    ) { _, dragAmount ->
-                                        val adjustedScale = scale * previewScale
-                                        if (adjustedScale != 0f) {
-                                            val deltaX = dragAmount.x / adjustedScale
-                                            val deltaY = dragAmount.y / adjustedScale
-                                            dragOffsetX += deltaX
-                                            dragOffsetY += deltaY
-                                            onSetOffset(dragOffsetX, dragOffsetY)
-                                        }
-                                    }
-                                }
-                            }
-                            .pointerInput(currentWatermarkBitmap, scale, previewScale) {
-                                if (currentWatermarkBitmap != null) {
-                                    detectTapGestures { tapOffset ->
-                                        val adjustedScale = scale * previewScale
-                                        if (adjustedScale != 0f) {
-                                            val newOffsetX = (tapOffset.x / adjustedScale) - currentWatermarkBitmap.width / 2f
-                                            val newOffsetY = (tapOffset.y / adjustedScale) - currentWatermarkBitmap.height / 2f
-                                            onSetOffset(newOffsetX, newOffsetY)
-                                        }
-                                    }
-                                }
-                            }
                     ) {
                         Image(
                             bitmap = baseImage,
@@ -1700,7 +1673,49 @@ private fun PreviewCard(
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
                                     .offset(offsetXDp, offsetYDp)
-                                    .size(width = widthDp, height = heightDp),
+                                    .size(width = widthDp, height = heightDp)
+                                    .pointerInput(currentWatermarkBitmap, scale, previewScale) {
+                                        if (currentWatermarkBitmap != null) {
+                                            awaitEachGesture {
+                                                val down = awaitFirstDown(requireUnconsumed = false)
+                                                dragOffsetX = offsetX
+                                                dragOffsetY = offsetY
+                                                var pastTouchSlop = false
+                                                var totalDrag = Offset.Zero
+                                                val pointerId = down.id
+                                                val viewConfiguration = viewConfiguration
+                                                while (true) {
+                                                    val event = awaitPointerEvent()
+                                                    if (event.changes.count { it.pressed && it.id != pointerId } > 0) {
+                                                        return@awaitEachGesture
+                                                    }
+                                                    val change = event.changes.firstOrNull { it.id == pointerId }
+                                                        ?: return@awaitEachGesture
+                                                    if (!change.pressed) {
+                                                        return@awaitEachGesture
+                                                    }
+                                                    val delta = change.positionChange()
+                                                    if (!pastTouchSlop) {
+                                                        totalDrag += delta
+                                                        if (totalDrag.getDistance() > viewConfiguration.touchSlop) {
+                                                            pastTouchSlop = true
+                                                        }
+                                                    }
+                                                    if (pastTouchSlop) {
+                                                        val adjustedScale = scale * previewScale
+                                                        if (adjustedScale != 0f) {
+                                                            val deltaX = delta.x / adjustedScale
+                                                            val deltaY = delta.y / adjustedScale
+                                                            dragOffsetX += deltaX
+                                                            dragOffsetY += deltaY
+                                                            onSetOffset(dragOffsetX, dragOffsetY)
+                                                        }
+                                                        change.consumePositionChange()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
                                 alpha = 0.4f,
                                 contentScale = ContentScale.FillBounds
                             )
