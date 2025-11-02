@@ -82,12 +82,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -902,9 +904,9 @@ fun ExtractorScreen() {
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Fit
                             )
+                            val highlightColor = MaterialTheme.colorScheme.primary
                             val overlayBitmapLocal = overlayBitmap
                             if (overlayImage != null && overlayBitmapLocal != null) {
-                                val highlightColor = MaterialTheme.colorScheme.primary
                                 Canvas(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -923,15 +925,21 @@ fun ExtractorScreen() {
                                     val overlayHeightPx = overlayBitmapLocal.height * scale
                                     val offsetXPx = overlayOffsetX * scale
                                     val offsetYPx = overlayOffsetY * scale
-                                    val destinationRect = androidx.compose.ui.geometry.Rect(
-                                        offsetXPx,
-                                        offsetYPx,
-                                        offsetXPx + overlayWidthPx,
-                                        offsetYPx + overlayHeightPx
-                                    )
-                                    drawImageRect(
+                                    drawImage(
                                         image = overlayImage,
-                                        dstRect = destinationRect,
+                                        srcOffset = IntOffset.Zero,
+                                        srcSize = IntSize(
+                                            overlayImage.width,
+                                            overlayImage.height
+                                        ),
+                                        dstOffset = IntOffset(
+                                            offsetXPx.roundToInt(),
+                                            offsetYPx.roundToInt()
+                                        ),
+                                        dstSize = IntSize(
+                                            overlayWidthPx.roundToInt(),
+                                            overlayHeightPx.roundToInt()
+                                        ),
                                         alpha = 0.6f,
                                         colorFilter = overlayFilter.colorFilter(),
                                         blendMode = blendModeOption.blendMode
