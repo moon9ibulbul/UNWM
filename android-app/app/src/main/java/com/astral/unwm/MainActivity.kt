@@ -119,6 +119,11 @@ private data class QueuedImage(
     val displayName: String
 )
 
+private data class DetectionGuessResult(
+    val detections: List<WatermarkDetection>,
+    val guessedAlphas: List<Float?>
+)
+
 private enum class AppTab(@StringRes val titleRes: Int) {
     Unwatermarker(R.string.tab_unwatermarker),
     Extractor(R.string.tab_extractor)
@@ -224,6 +229,57 @@ fun UnwatermarkerScreen() {
         loadNextQueueImage()
     }
 
+    suspend fun detectWatermarkCandidates(
+        base: Bitmap,
+        watermark: Bitmap,
+        threshold: Float,
+        autoGuess: Boolean,
+        transparencyClamp: Int,
+        opaqueClamp: Int
+    ): DetectionGuessResult {
+        return withContext(Dispatchers.Default) {
+            val primaryDetections = WatermarkDetector.detect(
+                base = base,
+                watermark = watermark,
+                matchThreshold = threshold.toDouble()
+            )
+            val relaxedThreshold = max(0.3f, threshold - 0.15f)
+            val candidateDetections = if (autoGuess && primaryDetections.isEmpty() && relaxedThreshold < threshold) {
+                WatermarkDetector.detect(
+                    base = base,
+                    watermark = watermark,
+                    matchThreshold = relaxedThreshold.toDouble()
+                )
+            } else {
+                primaryDetections
+            }
+            val orderedDetections = candidateDetections
+                .map { detection ->
+                    val guessedAlpha = if (autoGuess) {
+                        WatermarkAlphaGuesser.guessAlpha(
+                            base = base,
+                            watermark = watermark,
+                            offsetX = detection.offsetX.roundToInt(),
+                            offsetY = detection.offsetY.roundToInt(),
+                            transparencyThreshold = transparencyClamp,
+                            opaqueThreshold = opaqueClamp
+                        )
+                    } else {
+                        null
+                    }
+                    detection to guessedAlpha
+                }
+                .sortedWith(
+                    compareByDescending<Pair<WatermarkDetection, Float?>> { it.second != null }
+                        .thenByDescending { it.first.score }
+                )
+            DetectionGuessResult(
+                detections = orderedDetections.map { it.first },
+                guessedAlphas = orderedDetections.map { it.second }
+            )
+        }
+    }
+
     fun clearQueue() {
         if (bulkQueue.isEmpty()) return
         bulkQueue.clear()
@@ -264,13 +320,17 @@ fun UnwatermarkerScreen() {
                         return@forEach
                     }
                     val threshold = detectionThreshold
-                    val detections = withContext(Dispatchers.Default) {
-                        WatermarkDetector.detect(
-                            base = base,
-                            watermark = watermark,
-                            matchThreshold = threshold.toDouble()
-                        )
-                    }
+                    val transparencyClampInt = transparencyThreshold.roundToInt()
+                    val opaqueClampInt = opaqueThreshold.roundToInt()
+                    val detectionOutcome = detectWatermarkCandidates(
+                        base = base,
+                        watermark = watermark,
+                        threshold = threshold,
+                        autoGuess = autoGuessAlpha,
+                        transparencyClamp = transparencyClampInt,
+                        opaqueClamp = opaqueClampInt
+                    )
+                    val detections = detectionOutcome.detections
                     if (detections.isEmpty()) {
                         return@forEach
                     }
@@ -281,8 +341,6 @@ fun UnwatermarkerScreen() {
                         selectedIndices = emptySet()
                     )
                     val manualAlphaAdjust = alphaAdjust
-                    val transparencyClamp = transparencyThreshold.roundToInt()
-                    val opaqueClamp = opaqueThreshold.roundToInt()
                     val shouldGuessAlpha = autoGuessAlpha
                     val (processedBitmap, guessedAlpha) = withContext(Dispatchers.Default) {
                         var firstGuessedAlpha: Float? = null
@@ -293,8 +351,8 @@ fun UnwatermarkerScreen() {
                                     watermark = watermark,
                                     offsetX = detection.offsetX.roundToInt(),
                                     offsetY = detection.offsetY.roundToInt(),
-                                    transparencyThreshold = transparencyClamp,
-                                    opaqueThreshold = opaqueClamp
+                                    transparencyThreshold = transparencyClampInt,
+                                    opaqueThreshold = opaqueClampInt
                                 )
                                 if (firstGuessedAlpha == null && guess != null) {
                                     firstGuessedAlpha = guess
@@ -309,8 +367,8 @@ fun UnwatermarkerScreen() {
                                 offsetX = detection.offsetX.roundToInt(),
                                 offsetY = detection.offsetY.roundToInt(),
                                 alphaAdjust = detectionAlpha,
-                                transparencyThreshold = transparencyClamp,
-                                opaqueThreshold = opaqueClamp
+                                transparencyThreshold = transparencyClampInt,
+                                opaqueThreshold = opaqueClampInt
                             )
                         }
                         processed to firstGuessedAlpha
@@ -393,7 +451,14 @@ fun UnwatermarkerScreen() {
         }
     }
 
-    LaunchedEffect(baseBitmap, watermarkBitmap, detectionThreshold) {
+    LaunchedEffect(
+        baseBitmap,
+        watermarkBitmap,
+        detectionThreshold,
+        autoGuessAlpha,
+        transparencyThreshold,
+        opaqueThreshold
+    ) {
         val base = baseBitmap
         val wm = watermarkBitmap
         detectionResults = emptyList()
@@ -402,22 +467,31 @@ fun UnwatermarkerScreen() {
         if (base != null && wm != null) {
             detectionState = DetectionState.Running
             try {
-                val detections = withContext(Dispatchers.Default) {
-                    WatermarkDetector.detect(
-                        base = base,
-                        watermark = wm,
-                        matchThreshold = detectionThreshold.toDouble()
-                    )
-                }
+                val detectionOutcome = detectWatermarkCandidates(
+                    base = base,
+                    watermark = wm,
+                    threshold = detectionThreshold,
+                    autoGuess = autoGuessAlpha,
+                    transparencyClamp = transparencyThreshold.roundToInt(),
+                    opaqueClamp = opaqueThreshold.roundToInt()
+                )
+                val detections = detectionOutcome.detections
                 detectionResults = detections
-                detectionState = if (detections.isEmpty()) {
-                    DetectionState.NoMatch
+                if (detections.isEmpty()) {
+                    detectionState = DetectionState.NoMatch
                 } else {
+                    detectionState = DetectionState.Success
                     val first = detections.first()
                     offsetX = first.offsetX
                     offsetY = first.offsetY
                     selectedDetectionIndices = setOf(0)
-                    DetectionState.Success
+                    if (autoGuessAlpha) {
+                        detectionOutcome.guessedAlphas.firstOrNull()?.let { guessedAlpha ->
+                            if (guessedAlpha != null) {
+                                alphaAdjust = guessedAlpha
+                            }
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 if (e is java.util.concurrent.CancellationException) throw e
