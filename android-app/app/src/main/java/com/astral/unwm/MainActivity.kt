@@ -159,6 +159,7 @@ fun UnwatermarkerScreen() {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var alphaAdjust by remember { mutableFloatStateOf(1f) }
+    var autoGuessAlpha by remember { mutableStateOf(false) }
     var transparencyThreshold by remember { mutableFloatStateOf(0f) }
     var opaqueThreshold by remember { mutableFloatStateOf(255f) }
     var detectionThreshold by remember { mutableFloatStateOf(0.9f) }
@@ -279,18 +280,43 @@ fun UnwatermarkerScreen() {
                         applyAll = true,
                         selectedIndices = emptySet()
                     )
-                    val processedBitmap = withContext(Dispatchers.Default) {
-                        offsets.fold(base) { current, detection ->
+                    val manualAlphaAdjust = alphaAdjust
+                    val transparencyClamp = transparencyThreshold.roundToInt()
+                    val opaqueClamp = opaqueThreshold.roundToInt()
+                    val shouldGuessAlpha = autoGuessAlpha
+                    val (processedBitmap, guessedAlpha) = withContext(Dispatchers.Default) {
+                        var firstGuessedAlpha: Float? = null
+                        val processed = offsets.fold(base) { current, detection ->
+                            val detectionAlpha = if (shouldGuessAlpha) {
+                                val guess = WatermarkAlphaGuesser.guessAlpha(
+                                    base = current,
+                                    watermark = watermark,
+                                    offsetX = detection.offsetX.roundToInt(),
+                                    offsetY = detection.offsetY.roundToInt(),
+                                    transparencyThreshold = transparencyClamp,
+                                    opaqueThreshold = opaqueClamp
+                                )
+                                if (firstGuessedAlpha == null && guess != null) {
+                                    firstGuessedAlpha = guess
+                                }
+                                guess ?: manualAlphaAdjust
+                            } else {
+                                manualAlphaAdjust
+                            }
                             WatermarkRemover.removeWatermark(
                                 base = current,
                                 watermark = watermark,
                                 offsetX = detection.offsetX.roundToInt(),
                                 offsetY = detection.offsetY.roundToInt(),
-                                alphaAdjust = alphaAdjust,
-                                transparencyThreshold = transparencyThreshold.roundToInt(),
-                                opaqueThreshold = opaqueThreshold.roundToInt()
+                                alphaAdjust = detectionAlpha,
+                                transparencyThreshold = transparencyClamp,
+                                opaqueThreshold = opaqueClamp
                             )
                         }
+                        processed to firstGuessedAlpha
+                    }
+                    if (shouldGuessAlpha && guessedAlpha != null) {
+                        alphaAdjust = guessedAlpha
                     }
                     val saved = withContext(Dispatchers.IO) {
                         saveBitmapToGallery(context, processedBitmap)
@@ -522,6 +548,27 @@ fun UnwatermarkerScreen() {
             }
         )
 
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(text = stringResource(id = R.string.auto_guess_alpha))
+                Switch(
+                    checked = autoGuessAlpha,
+                    onCheckedChange = { isChecked ->
+                        autoGuessAlpha = isChecked
+                    }
+                )
+            }
+        }
+
         SliderCard(
             title = stringResource(id = R.string.offset_x),
             value = offsetX,
@@ -548,7 +595,8 @@ fun UnwatermarkerScreen() {
             onValueChange = { alphaAdjust = it },
             valueRange = 0.1f..2f,
             steps = 37,
-            valueFormatter = { value -> String.format("%.2fx", value) }
+            valueFormatter = { value -> String.format("%.2fx", value) },
+            enabled = !autoGuessAlpha
         )
         SliderCard(
             title = stringResource(id = R.string.transparency_threshold),
@@ -586,24 +634,49 @@ fun UnwatermarkerScreen() {
                     }
                     isProcessing = true
                     scope.launch {
-                        val result = withContext(Dispatchers.Default) {
+                        val manualAlphaAdjust = alphaAdjust
+                        val transparencyClamp = transparencyThreshold.roundToInt()
+                        val opaqueClamp = opaqueThreshold.roundToInt()
+                        val shouldGuessAlpha = autoGuessAlpha
+                        val (result, guessedAlpha) = withContext(Dispatchers.Default) {
                             val offsetsToApply = collectOffsets(
                                 manualOffset = WatermarkDetection(offsetX, offsetY, 1f),
                                 detectionResults = detectionResults,
                                 applyAll = applyAllDetections,
                                 selectedIndices = selectedDetectionIndices
                             )
-                            offsetsToApply.fold(base) { currentBitmap, detection ->
+                            var firstGuessedAlpha: Float? = null
+                            val processed = offsetsToApply.fold(base) { currentBitmap, detection ->
+                                val detectionAlpha = if (shouldGuessAlpha) {
+                                    val guess = WatermarkAlphaGuesser.guessAlpha(
+                                        base = currentBitmap,
+                                        watermark = wm,
+                                        offsetX = detection.offsetX.roundToInt(),
+                                        offsetY = detection.offsetY.roundToInt(),
+                                        transparencyThreshold = transparencyClamp,
+                                        opaqueThreshold = opaqueClamp
+                                    )
+                                    if (firstGuessedAlpha == null && guess != null) {
+                                        firstGuessedAlpha = guess
+                                    }
+                                    guess ?: manualAlphaAdjust
+                                } else {
+                                    manualAlphaAdjust
+                                }
                                 WatermarkRemover.removeWatermark(
                                     base = currentBitmap,
                                     watermark = wm,
                                     offsetX = detection.offsetX.roundToInt(),
                                     offsetY = detection.offsetY.roundToInt(),
-                                    alphaAdjust = alphaAdjust,
-                                    transparencyThreshold = transparencyThreshold.roundToInt(),
-                                    opaqueThreshold = opaqueThreshold.roundToInt()
+                                    alphaAdjust = detectionAlpha,
+                                    transparencyThreshold = transparencyClamp,
+                                    opaqueThreshold = opaqueClamp
                                 )
                             }
+                            processed to firstGuessedAlpha
+                        }
+                        if (shouldGuessAlpha && guessedAlpha != null) {
+                            alphaAdjust = guessedAlpha
                         }
                         resultBitmap = result
                         isProcessing = false

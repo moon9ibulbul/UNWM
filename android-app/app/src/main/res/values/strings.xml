@@ -9,6 +9,7 @@
     <string name="offset_x">Offset X</string>
     <string name="offset_y">Offset Y</string>
     <string name="alpha_adjust">Penyesuaian Alpha</string>
+    <string name="auto_guess_alpha">Perkirakan alpha watermark otomatis</string>
     <string name="transparency_threshold">Ambang Transparansi</string>
     <string name="opaque_threshold">Ambang Opak</string>
     <string name="processing">Memproses…</string>
