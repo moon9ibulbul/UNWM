@@ -1471,16 +1471,20 @@ private fun PreviewCard(
                                         val newOffsetY = (tapOffset.y / scale) - currentWatermarkBitmap.height / 2f
                                         onSetOffset(newOffsetX, newOffsetY)
                                         coroutineScope.launch {
-                                            val refined = withContext(Dispatchers.Default) {
-                                                WatermarkDetector.refinePosition(
-                                                    base = base,
-                                                    watermark = currentWatermarkBitmap,
-                                                    approximateOffsetX = newOffsetX,
-                                                    approximateOffsetY = newOffsetY
-                                                )
-                                            }
-                                            if (refined != null) {
-                                                onSetOffset(refined.offsetX, refined.offsetY)
+                                            try {
+                                                val refined = withContext(Dispatchers.Default) {
+                                                    WatermarkDetector.refinePosition(
+                                                        base = base,
+                                                        watermark = currentWatermarkBitmap,
+                                                        approximateOffsetX = newOffsetX,
+                                                        approximateOffsetY = newOffsetY
+                                                    )
+                                                }
+                                                if (refined != null) {
+                                                    onSetOffset(refined.offsetX, refined.offsetY)
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e("AstralUNWM", "Failed to refine watermark position", e)
                                             }
                                         }
                                     }
