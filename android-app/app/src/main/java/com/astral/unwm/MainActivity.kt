@@ -1095,9 +1095,15 @@ fun ExtractorScreen() {
                                             overlayWidthPx.roundToInt(),
                                             overlayHeightPx.roundToInt()
                                         ),
-                                        alpha = 0.6f,
+                                        alpha = 0.75f,
                                         colorFilter = overlayFilter.colorFilter(),
                                         blendMode = blendModeOption.blendMode
+                                    )
+                                    drawRect(
+                                        color = highlightColor,
+                                        topLeft = androidx.compose.ui.geometry.Offset(offsetXPx, offsetYPx),
+                                        size = androidx.compose.ui.geometry.Size(overlayWidthPx, overlayHeightPx),
+                                        style = Stroke(width = 2.dp.toPx())
                                     )
                                 }
                             }
@@ -1618,9 +1624,11 @@ private fun PreviewCard(
                 var dragOffsetX by remember { mutableFloatStateOf(offsetX) }
                 var dragOffsetY by remember { mutableFloatStateOf(offsetY) }
                 var previewTranslation by remember { mutableStateOf(Offset.Zero) }
+                var isOverlayDragging by remember { mutableStateOf(false) }
                 LaunchedEffect(base, currentWatermarkBitmap) {
                     previewScale = 1f
                     previewTranslation = Offset.Zero
+                    isOverlayDragging = false
                 }
                 LaunchedEffect(offsetX, offsetY) {
                     dragOffsetX = offsetX
@@ -1647,6 +1655,9 @@ private fun PreviewCard(
                             }
                             .pointerInput(base, currentWatermarkBitmap) {
                                 detectTransformGestures { centroid, pan, zoom, _ ->
+                                    if (isOverlayDragging) {
+                                        return@detectTransformGestures
+                                    }
                                     if (!zoom.isNaN() && zoom != 1f) {
                                         val newScale = (previewScale * zoom).coerceIn(1f, 4f)
                                         val scaleChange = if (previewScale == 0f) 1f else newScale / previewScale
@@ -1700,12 +1711,14 @@ private fun PreviewCard(
                                     .align(Alignment.TopStart)
                                     .offset(offsetXDp, offsetYDp)
                                     .size(width = widthDp, height = heightDp)
+                                    .border(width = 1.dp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f))
                                     .pointerInput(currentWatermarkBitmap, scale, previewScale) {
                                         if (currentWatermarkBitmap != null) {
                                             detectDragGestures(
                                                 onDragStart = {
                                                     dragOffsetX = offsetX
                                                     dragOffsetY = offsetY
+                                                    isOverlayDragging = true
                                                 },
                                                 onDrag = { change, dragAmount ->
                                                     val adjustedScale = scale * previewScale
@@ -1717,11 +1730,13 @@ private fun PreviewCard(
                                                         onSetOffset(dragOffsetX, dragOffsetY)
                                                     }
                                                     change.consume()
-                                                }
+                                                },
+                                                onDragEnd = { isOverlayDragging = false },
+                                                onDragCancel = { isOverlayDragging = false }
                                             )
                                         }
                                     },
-                                alpha = 0.4f,
+                                alpha = 0.7f,
                                 contentScale = ContentScale.FillBounds
                             )
                             val highlightColor = MaterialTheme.colorScheme.primary
