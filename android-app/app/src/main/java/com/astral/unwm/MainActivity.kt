@@ -187,6 +187,7 @@ fun UnwatermarkerScreen() {
     var lastToastMessage by remember { mutableStateOf<String?>(null) }
     var detectionState by remember { mutableStateOf<DetectionState>(DetectionState.Idle) }
     var detectionResults by remember { mutableStateOf<List<WatermarkDetection>>(emptyList()) }
+    var detectionAlphaGuesses by remember { mutableStateOf<List<Float?>>(emptyList()) }
     var selectedDetectionIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var applyAllDetections by remember { mutableStateOf(true) }
 
@@ -204,6 +205,7 @@ fun UnwatermarkerScreen() {
         resultBitmap = null
         detectionState = DetectionState.Idle
         detectionResults = emptyList()
+        detectionAlphaGuesses = emptyList()
         selectedDetectionIndices = emptySet()
         applyAllDetections = true
         currentQueueItemName = label
@@ -357,17 +359,29 @@ fun UnwatermarkerScreen() {
                     val manualAlphaAdjust = alphaAdjust
                     val shouldGuessAlpha = autoGuessAlpha
                     val (processedBitmap, guessedAlpha) = withContext(Dispatchers.Default) {
+                        val guessedAlphaByOffset = detectionOutcome.detections
+                            .zip(detectionOutcome.guessedAlphas)
+                            .associate { (detection, guess) ->
+                                (detection.offsetX.roundToInt() to detection.offsetY.roundToInt()) to guess
+                            }
                         var firstGuessedAlpha: Float? = null
                         val processed = offsets.fold(base) { current, detection ->
+                            val detectionKey = detection.offsetX.roundToInt() to detection.offsetY.roundToInt()
                             val detectionAlpha = if (shouldGuessAlpha) {
-                                val guess = WatermarkAlphaGuesser.guessAlpha(
-                                    base = current,
-                                    watermark = watermark,
-                                    offsetX = detection.offsetX.roundToInt(),
-                                    offsetY = detection.offsetY.roundToInt(),
-                                    transparencyThreshold = transparencyClampInt,
-                                    opaqueThreshold = opaqueClampInt
-                                )
+                                val hasStoredGuess = guessedAlphaByOffset.containsKey(detectionKey)
+                                val storedGuess = guessedAlphaByOffset[detectionKey]
+                                val guess = if (hasStoredGuess) {
+                                    storedGuess
+                                } else {
+                                    WatermarkAlphaGuesser.guessAlpha(
+                                        base = base,
+                                        watermark = watermark,
+                                        offsetX = detectionKey.first,
+                                        offsetY = detectionKey.second,
+                                        transparencyThreshold = transparencyClampInt,
+                                        opaqueThreshold = opaqueClampInt
+                                    )
+                                }
                                 if (firstGuessedAlpha == null && guess != null) {
                                     firstGuessedAlpha = guess
                                 }
@@ -378,8 +392,8 @@ fun UnwatermarkerScreen() {
                             WatermarkRemover.removeWatermark(
                                 base = current,
                                 watermark = watermark,
-                                offsetX = detection.offsetX.roundToInt(),
-                                offsetY = detection.offsetY.roundToInt(),
+                                offsetX = detectionKey.first,
+                                offsetY = detectionKey.second,
                                 alphaAdjust = detectionAlpha,
                                 transparencyThreshold = transparencyClampInt,
                                 opaqueThreshold = opaqueClampInt
@@ -430,6 +444,7 @@ fun UnwatermarkerScreen() {
         resultBitmap = null
         detectionState = DetectionState.Idle
         detectionResults = emptyList()
+        detectionAlphaGuesses = emptyList()
         selectedDetectionIndices = emptySet()
         applyAllDetections = true
     }
@@ -476,6 +491,7 @@ fun UnwatermarkerScreen() {
         val base = baseBitmap
         val wm = watermarkBitmap
         detectionResults = emptyList()
+        detectionAlphaGuesses = emptyList()
         selectedDetectionIndices = emptySet()
         applyAllDetections = true
         if (base != null && wm != null) {
@@ -491,6 +507,7 @@ fun UnwatermarkerScreen() {
                 )
                 val detections = detectionOutcome.detections
                 detectionResults = detections
+                detectionAlphaGuesses = detectionOutcome.guessedAlphas
                 if (detections.isEmpty()) {
                     detectionState = DetectionState.NoMatch
                 } else {
@@ -509,10 +526,12 @@ fun UnwatermarkerScreen() {
                 }
             } catch (e: Exception) {
                 if (e is java.util.concurrent.CancellationException) throw e
+                detectionAlphaGuesses = emptyList()
                 detectionState = DetectionState.Error(e.message ?: "Unknown error")
             }
         } else {
             detectionState = DetectionState.Idle
+            detectionAlphaGuesses = emptyList()
         }
     }
 
@@ -735,17 +754,29 @@ fun UnwatermarkerScreen() {
                                 applyAll = applyAllDetections,
                                 selectedIndices = selectedDetectionIndices
                             )
+                            val guessedAlphaByOffset = detectionResults
+                                .zip(detectionAlphaGuesses)
+                                .associate { (detection, guess) ->
+                                    (detection.offsetX.roundToInt() to detection.offsetY.roundToInt()) to guess
+                                }
                             var firstGuessedAlpha: Float? = null
                             val processed = offsetsToApply.fold(base) { currentBitmap, detection ->
+                                val detectionKey = detection.offsetX.roundToInt() to detection.offsetY.roundToInt()
                                 val detectionAlpha = if (shouldGuessAlpha) {
-                                    val guess = WatermarkAlphaGuesser.guessAlpha(
-                                        base = currentBitmap,
-                                        watermark = wm,
-                                        offsetX = detection.offsetX.roundToInt(),
-                                        offsetY = detection.offsetY.roundToInt(),
-                                        transparencyThreshold = transparencyClamp,
-                                        opaqueThreshold = opaqueClamp
-                                    )
+                                    val hasStoredGuess = guessedAlphaByOffset.containsKey(detectionKey)
+                                    val storedGuess = guessedAlphaByOffset[detectionKey]
+                                    val guess = if (hasStoredGuess) {
+                                        storedGuess
+                                    } else {
+                                        WatermarkAlphaGuesser.guessAlpha(
+                                            base = base,
+                                            watermark = wm,
+                                            offsetX = detectionKey.first,
+                                            offsetY = detectionKey.second,
+                                            transparencyThreshold = transparencyClamp,
+                                            opaqueThreshold = opaqueClamp
+                                        )
+                                    }
                                     if (firstGuessedAlpha == null && guess != null) {
                                         firstGuessedAlpha = guess
                                     }
@@ -756,8 +787,8 @@ fun UnwatermarkerScreen() {
                                 WatermarkRemover.removeWatermark(
                                     base = currentBitmap,
                                     watermark = wm,
-                                    offsetX = detection.offsetX.roundToInt(),
-                                    offsetY = detection.offsetY.roundToInt(),
+                                    offsetX = detectionKey.first,
+                                    offsetY = detectionKey.second,
                                     alphaAdjust = detectionAlpha,
                                     transparencyThreshold = transparencyClamp,
                                     opaqueThreshold = opaqueClamp
