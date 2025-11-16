@@ -108,10 +108,13 @@ import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+private const val AUTOMATION_ITEM_TIMEOUT_MS = 30_000L
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,6 +140,11 @@ private data class DetectionGuessResult(
     val detections: List<WatermarkDetection>,
     val guessedAlphas: List<Float?>
 )
+
+private sealed interface AutomationProcessingResult {
+    data class Success(val bitmap: Bitmap, val guessedAlpha: Float?) : AutomationProcessingResult
+    object NoDetections : AutomationProcessingResult
+}
 
 private enum class AppTab(@StringRes val titleRes: Int) {
     Unwatermarker(R.string.tab_unwatermarker),
@@ -341,104 +349,124 @@ fun UnwatermarkerScreen() {
         automationTotal = bulkQueue.size
         resultBitmap = null
         scope.launch {
+            suspend fun saveFailedAutomationResult(bitmap: Bitmap, displayName: String?) {
+                withContext(Dispatchers.IO) {
+                    saveBitmapToGallery(
+                        context = context,
+                        bitmap = bitmap,
+                        sourceDisplayName = displayName,
+                        suffix = "-gagal"
+                    )
+                }
+            }
             val queueSnapshot = bulkQueue.toList()
             var savedCount = 0
             var processedCount = 0
             try {
-                queueSnapshot.forEach { item ->
+                for (item in queueSnapshot) {
                     val base = withContext(Dispatchers.IO) { loadBitmapFromUri(context, item.uri) }
                     processedCount++
                     automationProgress = processedCount
                     if (base == null) {
-                        return@forEach
+                        continue
                     }
                     val threshold = detectionThreshold
                     val transparencyClampInt = transparencyThreshold.roundToInt()
                     val opaqueClampInt = opaqueThreshold.roundToInt()
-                    val detectionOutcome = detectWatermarkCandidates(
-                        base = base,
-                        watermark = watermark,
-                        threshold = threshold,
-                        autoGuess = autoGuessAlpha,
-                        transparencyClamp = transparencyClampInt,
-                        opaqueClamp = opaqueClampInt
-                    )
-                    val detections = detectionOutcome.detections
-                    if (detections.isEmpty()) {
-                        withContext(Dispatchers.IO) {
-                            saveBitmapToGallery(
-                                context = context,
-                                bitmap = base,
-                                sourceDisplayName = item.displayName,
-                                suffix = "-gagal"
+                    val processingResult = withTimeoutOrNull(AUTOMATION_ITEM_TIMEOUT_MS) {
+                        val detectionOutcome = detectWatermarkCandidates(
+                            base = base,
+                            watermark = watermark,
+                            threshold = threshold,
+                            autoGuess = autoGuessAlpha,
+                            transparencyClamp = transparencyClampInt,
+                            opaqueClamp = opaqueClampInt
+                        )
+                        val detections = detectionOutcome.detections
+                        if (detections.isEmpty()) {
+                            AutomationProcessingResult.NoDetections
+                        } else {
+                            val offsets = collectOffsets(
+                                manualOffset = null,
+                                detectionResults = detections,
+                                applyAll = true,
+                                selectedIndices = emptySet()
                             )
-                        }
-                        return@forEach
-                    }
-                    val offsets = collectOffsets(
-                        manualOffset = null,
-                        detectionResults = detections,
-                        applyAll = true,
-                        selectedIndices = emptySet()
-                    )
-                    val manualAlphaAdjust = alphaAdjust
-                    val shouldGuessAlpha = autoGuessAlpha
-                    val (processedBitmap, guessedAlpha) = withContext(Dispatchers.Default) {
-                        val guessedAlphaByOffset = detectionOutcome.detections
-                            .zip(detectionOutcome.guessedAlphas)
-                            .associate { (detection, guess) ->
-                                (detection.offsetX.roundToInt() to detection.offsetY.roundToInt()) to guess
-                            }
-                        var firstGuessedAlpha: Float? = null
-                        val processed = offsets.fold(base) { current, detection ->
-                            val detectionKey = detection.offsetX.roundToInt() to detection.offsetY.roundToInt()
-                            val detectionAlpha = if (shouldGuessAlpha) {
-                                val hasStoredGuess = guessedAlphaByOffset.containsKey(detectionKey)
-                                val storedGuess = guessedAlphaByOffset[detectionKey]
-                                val guess = if (hasStoredGuess) {
-                                    storedGuess
-                                } else {
-                                    WatermarkAlphaGuesser.guessAlpha(
-                                        base = base,
+                            val manualAlphaAdjust = alphaAdjust
+                            val shouldGuessAlpha = autoGuessAlpha
+                            val (processedBitmap, guessedAlpha) = withContext(Dispatchers.Default) {
+                                val guessedAlphaByOffset = detectionOutcome.detections
+                                    .zip(detectionOutcome.guessedAlphas)
+                                    .associate { (detection, guess) ->
+                                        (detection.offsetX.roundToInt() to detection.offsetY.roundToInt()) to guess
+                                    }
+                                var firstGuessedAlpha: Float? = null
+                                val processed = offsets.fold(base) { current, detection ->
+                                    val detectionKey = detection.offsetX.roundToInt() to detection.offsetY.roundToInt()
+                                    val detectionAlpha = if (shouldGuessAlpha) {
+                                        val hasStoredGuess = guessedAlphaByOffset.containsKey(detectionKey)
+                                        val storedGuess = guessedAlphaByOffset[detectionKey]
+                                        val guess = if (hasStoredGuess) {
+                                            storedGuess
+                                        } else {
+                                            WatermarkAlphaGuesser.guessAlpha(
+                                                base = base,
+                                                watermark = watermark,
+                                                offsetX = detectionKey.first,
+                                                offsetY = detectionKey.second,
+                                                transparencyThreshold = transparencyClampInt,
+                                                opaqueThreshold = opaqueClampInt
+                                            )
+                                        }
+                                        if (firstGuessedAlpha == null && guess != null) {
+                                            firstGuessedAlpha = guess
+                                        }
+                                        guess ?: manualAlphaAdjust
+                                    } else {
+                                        manualAlphaAdjust
+                                    }
+                                    WatermarkRemover.removeWatermark(
+                                        base = current,
                                         watermark = watermark,
                                         offsetX = detectionKey.first,
                                         offsetY = detectionKey.second,
+                                        alphaAdjust = detectionAlpha,
                                         transparencyThreshold = transparencyClampInt,
                                         opaqueThreshold = opaqueClampInt
                                     )
                                 }
-                                if (firstGuessedAlpha == null && guess != null) {
-                                    firstGuessedAlpha = guess
-                                }
-                                guess ?: manualAlphaAdjust
-                            } else {
-                                manualAlphaAdjust
+                                processed to firstGuessedAlpha
                             }
-                            WatermarkRemover.removeWatermark(
-                                base = current,
-                                watermark = watermark,
-                                offsetX = detectionKey.first,
-                                offsetY = detectionKey.second,
-                                alphaAdjust = detectionAlpha,
-                                transparencyThreshold = transparencyClampInt,
-                                opaqueThreshold = opaqueClampInt
-                            )
+                            AutomationProcessingResult.Success(processedBitmap, guessedAlpha)
                         }
-                        processed to firstGuessedAlpha
                     }
-                    if (shouldGuessAlpha && guessedAlpha != null) {
-                        alphaAdjust = guessedAlpha
-                    }
-                    val saved = withContext(Dispatchers.IO) {
-                        saveBitmapToGallery(
-                            context = context,
-                            bitmap = processedBitmap,
-                            sourceDisplayName = item.displayName
-                        )
-                    }
-                    if (saved) {
-                        savedCount++
-                        resultBitmap = processedBitmap
+                    when (processingResult) {
+                        null -> {
+                            saveFailedAutomationResult(base, item.displayName)
+                            continue
+                        }
+                        AutomationProcessingResult.NoDetections -> {
+                            saveFailedAutomationResult(base, item.displayName)
+                            continue
+                        }
+                        is AutomationProcessingResult.Success -> {
+                            val shouldGuessAlpha = autoGuessAlpha
+                            val guessedAlpha = processingResult.guessedAlpha
+                            if (shouldGuessAlpha && guessedAlpha != null) {
+                                alphaAdjust = guessedAlpha
+                            }
+                            val saved = withContext(Dispatchers.IO) {
+                                saveBitmapToGallery(
+                                    context = context,
+                                    bitmap = processingResult.bitmap,
+                                    sourceDisplayName = item.displayName
+                                )
+                            }
+                            if (saved) {
+                                savedCount++
+                                resultBitmap = processingResult.bitmap
+                            }
+                        }
                     }
                 }
                 lastToastMessage = context.getString(
@@ -1866,7 +1894,7 @@ private fun AppFooter(modifier: Modifier = Modifier) {
                     append("AstralExpress")
                 }
                 pop()
-                append(" v1.6.1")
+                append(" v1.6.5")
             }
         }
     }
