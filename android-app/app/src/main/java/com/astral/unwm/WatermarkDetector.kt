@@ -14,6 +14,7 @@ import kotlin.math.min
 
 private const val DEFAULT_MATCH_THRESHOLD = 0.9
 private const val DEFAULT_ALPHA_THRESHOLD = 5.0
+private const val MAX_DETECTIONS_PER_IMAGE = 10
 
 /**
  * Detects watermark positions using OpenCV's template matching with masking.
@@ -22,7 +23,7 @@ object WatermarkDetector {
     fun detect(
         base: Bitmap,
         watermark: Bitmap,
-        maxResults: Int = Int.MAX_VALUE,
+        maxResults: Int = MAX_DETECTIONS_PER_IMAGE,
         matchThreshold: Double = DEFAULT_MATCH_THRESHOLD,
         alphaThreshold: Double = DEFAULT_ALPHA_THRESHOLD
     ): List<WatermarkDetection> {
