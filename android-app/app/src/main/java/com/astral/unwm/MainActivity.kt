@@ -174,6 +174,7 @@ fun UnwatermarkerScreen() {
     var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var watermarkBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var baseImageName by remember { mutableStateOf<String?>(null) }
 
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -200,15 +201,31 @@ fun UnwatermarkerScreen() {
 
     val scope = rememberCoroutineScope()
 
-    fun updateBase(bitmap: Bitmap?, label: String?) {
+    val maxOffsetX = baseBitmap?.width?.toFloat()?.takeIf { it > 0f } ?: 1000f
+    val maxOffsetY = baseBitmap?.height?.toFloat()?.takeIf { it > 0f } ?: 1000f
+
+    LaunchedEffect(maxOffsetX) {
+        offsetX = offsetX.coerceIn(-maxOffsetX, maxOffsetX)
+    }
+
+    LaunchedEffect(maxOffsetY) {
+        offsetY = offsetY.coerceIn(-maxOffsetY, maxOffsetY)
+    }
+
+    fun updateBase(
+        bitmap: Bitmap?,
+        imageName: String?,
+        queueLabel: String? = if (bulkQueue.isNotEmpty()) imageName else null
+    ) {
         baseBitmap = bitmap
+        baseImageName = imageName
         resultBitmap = null
         detectionState = DetectionState.Idle
         detectionResults = emptyList()
         detectionAlphaGuesses = emptyList()
         selectedDetectionIndices = emptySet()
         applyAllDetections = true
-        currentQueueItemName = label
+        currentQueueItemName = queueLabel
         isProcessing = false
         offsetX = 0f
         offsetY = 0f
@@ -348,6 +365,14 @@ fun UnwatermarkerScreen() {
                     )
                     val detections = detectionOutcome.detections
                     if (detections.isEmpty()) {
+                        withContext(Dispatchers.IO) {
+                            saveBitmapToGallery(
+                                context = context,
+                                bitmap = base,
+                                sourceDisplayName = item.displayName,
+                                suffix = "-gagal"
+                            )
+                        }
                         return@forEach
                     }
                     val offsets = collectOffsets(
@@ -405,7 +430,11 @@ fun UnwatermarkerScreen() {
                         alphaAdjust = guessedAlpha
                     }
                     val saved = withContext(Dispatchers.IO) {
-                        saveBitmapToGallery(context, processedBitmap)
+                        saveBitmapToGallery(
+                            context = context,
+                            bitmap = processedBitmap,
+                            sourceDisplayName = item.displayName
+                        )
                     }
                     if (saved) {
                         savedCount++
@@ -434,12 +463,12 @@ fun UnwatermarkerScreen() {
         }
     }
 
-    val pickBaseImage = rememberImagePickerLauncher(context) { bitmap ->
+    val pickBaseImage = rememberImagePickerLauncher(context) { bitmap, displayName ->
         bulkQueue.clear()
         currentQueueItemName = null
-        updateBase(bitmap, null)
+        updateBase(bitmap, displayName, queueLabel = null)
     }
-    val pickWatermark = rememberImagePickerLauncher(context) { bitmap ->
+    val pickWatermark = rememberImagePickerLauncher(context) { bitmap, _ ->
         watermarkBitmap = bitmap
         resultBitmap = null
         detectionState = DetectionState.Idle
@@ -577,6 +606,7 @@ fun UnwatermarkerScreen() {
                 TextButton(onClick = {
                     clearQueue()
                     baseBitmap = null
+                    baseImageName = null
                     watermarkBitmap = null
                     resultBitmap = null
                     offsetX = 0f
@@ -683,7 +713,7 @@ fun UnwatermarkerScreen() {
                 offsetX = it
                 selectedDetectionIndices = emptySet()
             },
-            valueRange = -1000f..1000f,
+            valueRange = -maxOffsetX..maxOffsetX,
             valueFormatter = { value -> "${value.roundToInt()} px" },
             allowManualInput = true
         )
@@ -694,7 +724,7 @@ fun UnwatermarkerScreen() {
                 offsetY = it
                 selectedDetectionIndices = emptySet()
             },
-            valueRange = -1000f..1000f,
+            valueRange = -maxOffsetY..maxOffsetY,
             valueFormatter = { value -> "${value.roundToInt()} px" },
             allowManualInput = true
         )
@@ -817,9 +847,10 @@ fun UnwatermarkerScreen() {
         ResultCard(
             resultBitmap = resultBitmap,
             onSaveResult = { bitmap ->
+                val imageName = baseImageName
                 scope.launch {
                     val saved = withContext(Dispatchers.IO) {
-                        saveBitmapToGallery(context, bitmap)
+                        saveBitmapToGallery(context, bitmap, imageName)
                     }
                     lastToastMessage = context.getString(
                         if (saved) R.string.saved_to_gallery else R.string.save_failed
@@ -898,7 +929,7 @@ fun ExtractorScreen() {
         extractionY = overlayOffsetY.coerceIn(0f, max(0f, baseImage.height.toFloat() - extractionHeight))
     }
 
-    val pickBaseImage = rememberImagePickerLauncher(context) { bitmap ->
+    val pickBaseImage = rememberImagePickerLauncher(context) { bitmap, _ ->
         if (bitmap == null) {
             originalBaseBitmap = null
             baseBitmap = null
@@ -915,7 +946,7 @@ fun ExtractorScreen() {
         hasManualOverlayPosition = false
     }
 
-    val pickOverlayImage = rememberImagePickerLauncher(context) { bitmap ->
+    val pickOverlayImage = rememberImagePickerLauncher(context) { bitmap, _ ->
         if (bitmap == null) {
             originalOverlayBitmap = null
             overlayBitmap = null
@@ -2210,8 +2241,56 @@ private fun collectOffsets(
     return offsetsToApply
 }
 
-private fun saveBitmapToGallery(context: Context, bitmap: Bitmap): Boolean {
-    val filename = "AstralUNWM_${System.currentTimeMillis()}.png"
+private data class OutputFileConfig(
+    val displayName: String,
+    val mimeType: String,
+    val compressFormat: Bitmap.CompressFormat
+)
+
+@Suppress("DEPRECATION")
+private fun resolveOutputFileConfig(
+    sourceDisplayName: String?,
+    suffix: String?
+): OutputFileConfig {
+    val fallbackBase = "AstralUNWM_${System.currentTimeMillis()}"
+    val trimmedName = sourceDisplayName?.trim().orEmpty()
+    val dotIndex = trimmedName.lastIndexOf('.')
+    val hasExtension = dotIndex in 1 until trimmedName.length - 1
+    val baseName = if (hasExtension) trimmedName.substring(0, dotIndex) else trimmedName
+    val extension = if (hasExtension) trimmedName.substring(dotIndex + 1) else ""
+    val normalizedExt = extension.lowercase()
+    val cleanBase = baseName.ifBlank { fallbackBase }
+    val suffixText = suffix?.takeIf { it.isNotBlank() } ?: ""
+    val (finalExtension, mimeType, format) = when (normalizedExt) {
+        "jpg", "jpeg" -> Triple(
+            if (extension.isNotBlank()) extension else normalizedExt,
+            "image/jpeg",
+            Bitmap.CompressFormat.JPEG
+        )
+        "png" -> Triple(if (extension.isNotBlank()) extension else "png", "image/png", Bitmap.CompressFormat.PNG)
+        "webp" -> Triple(
+            if (extension.isNotBlank()) extension else "webp",
+            "image/webp",
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Bitmap.CompressFormat.WEBP_LOSSLESS
+            } else {
+                Bitmap.CompressFormat.WEBP
+            }
+        )
+        else -> Triple("png", "image/png", Bitmap.CompressFormat.PNG)
+    }
+    val finalBase = cleanBase + suffixText
+    val displayName = "$finalBase.$finalExtension"
+    return OutputFileConfig(displayName, mimeType, format)
+}
+
+private fun saveBitmapToGallery(
+    context: Context,
+    bitmap: Bitmap,
+    sourceDisplayName: String? = null,
+    suffix: String? = null
+): Boolean {
+    val outputConfig = resolveOutputFileConfig(sourceDisplayName, suffix)
     val resolver = context.contentResolver
     val imageCollection: Uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -2219,8 +2298,8 @@ private fun saveBitmapToGallery(context: Context, bitmap: Bitmap): Boolean {
         MediaStore.Images.Media.EXTERNAL_CONTENT_URI
     }
     val contentValues = ContentValues().apply {
-        put(MediaStore.Images.Media.DISPLAY_NAME, filename)
-        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+        put(MediaStore.Images.Media.DISPLAY_NAME, outputConfig.displayName)
+        put(MediaStore.Images.Media.MIME_TYPE, outputConfig.mimeType)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
@@ -2229,7 +2308,7 @@ private fun saveBitmapToGallery(context: Context, bitmap: Bitmap): Boolean {
         val uri = resolver.insert(imageCollection, contentValues) ?: return false
         resolver.openOutputStream(uri).use { outputStream ->
             if (outputStream == null) return false
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)) {
+            if (!bitmap.compress(outputConfig.compressFormat, 100, outputStream)) {
                 return false
             }
         }
@@ -2248,15 +2327,16 @@ private fun saveBitmapToGallery(context: Context, bitmap: Bitmap): Boolean {
 @Composable
 private fun rememberImagePickerLauncher(
     context: Context,
-    onBitmapLoaded: (Bitmap?) -> Unit
+    onBitmapLoaded: (Bitmap?, String?) -> Unit
 ) =
     rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) {
-            onBitmapLoaded(null)
+            onBitmapLoaded(null, null)
             return@rememberLauncherForActivityResult
         }
         val bitmap = loadBitmapFromUri(context, uri)
-        onBitmapLoaded(bitmap)
+        val displayName = resolveDisplayName(context, uri)
+        onBitmapLoaded(bitmap, displayName)
     }
 
 private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap? {
