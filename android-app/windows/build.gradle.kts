@@ -15,7 +15,7 @@ repositories {
 
 dependencies {
     implementation(compose.desktop.currentOs)
-    implementation("org.opencv:opencv:4.10.0")
+    implementation("org.openpnp:opencv:4.10.0-0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.8.1")
 }
 

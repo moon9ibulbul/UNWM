@@ -5,7 +5,7 @@ This directory contains a Compose for Desktop adaptation of AstralUNWM that mirr
 ## Running locally
 
 1. Install JDK 17 and Gradle 8.7 or newer.
-2. Ensure OpenCV native libraries can be resolved on your system (the build pulls `org.opencv:opencv:4.10.0`).
+2. Ensure OpenCV native libraries can be resolved on your system (the build pulls `org.openpnp:opencv:4.10.0-0` and loads the packaged Windows binaries automatically).
 3. From the `windows` directory run:
    ```bash
    gradle run

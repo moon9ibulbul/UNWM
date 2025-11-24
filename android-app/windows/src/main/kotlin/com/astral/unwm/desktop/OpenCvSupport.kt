@@ -1,15 +1,18 @@
 package com.astral.unwm.desktop
 
+import nu.pattern.OpenCV
+import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import org.opencv.core.Core
 import java.awt.image.BufferedImage
 import java.awt.image.DataBufferByte
 import kotlin.math.max
 
 fun initOpenCv() {
+    runCatching { OpenCV.loadShared() }
+        .recoverCatching { OpenCV.loadLocally() }
     runCatching { System.loadLibrary(Core.NATIVE_LIBRARY_NAME) }
 }
 
