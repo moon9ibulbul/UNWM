@@ -10,6 +10,11 @@ This directory contains a Compose for Desktop adaptation of AstralUNWM that mirr
    ```bash
    gradle run
    ```
+   If you experience GPU-specific rendering issues, you can override the renderer by passing
+   Skiko flags, e.g.:
+   ```bash
+   gradle run -Dskiko.renderApi=DIRECTX
+   ```
    To produce a Windows installer from Windows hosts run:
    ```bash
    gradle packageReleaseExe
