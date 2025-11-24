@@ -19,13 +19,27 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 
-fun main() = application {
-    Window(onCloseRequest = ::exitApplication, title = "AstralUNWM") {
-        MaterialTheme {
-            Surface(modifier = Modifier.padding(24.dp)) {
-                DesktopApp()
+fun main() {
+    configureRenderingFallback()
+
+    application {
+        Window(onCloseRequest = ::exitApplication, title = "AstralUNWM") {
+            MaterialTheme {
+                Surface(modifier = Modifier.padding(24.dp)) {
+                    DesktopApp()
+                }
             }
         }
+    }
+}
+
+private fun configureRenderingFallback() {
+    // Compose for Desktop can render a black window on some Windows GPUs when the hardware
+    // renderer fails to initialize. Forcing software rendering restores a visible UI while
+    // still allowing users to override the renderer via the standard skiko flag.
+    val renderApiSet = System.getProperty("skiko.renderApi")?.isNotBlank() == true
+    if (!renderApiSet) {
+        System.setProperty("skiko.renderApi", "SOFTWARE")
     }
 }
 
