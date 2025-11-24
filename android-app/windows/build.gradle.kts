@@ -34,5 +34,13 @@ compose.desktop {
             description = "AstralUNWM desktop build"
             modules("java.desktop")
         }
+
+        buildTypes {
+            release {
+                proguard {
+                    isEnabled.set(false)
+                }
+            }
+        }
     }
 }
