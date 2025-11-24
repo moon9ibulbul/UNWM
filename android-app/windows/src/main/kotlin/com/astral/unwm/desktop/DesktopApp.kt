@@ -34,7 +34,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -97,7 +96,7 @@ private fun ImagePreview(title: String, image: BufferedImage?, modifier: Modifie
                 }
             } else {
                 Image(
-                    bitmap = image.toImageBitmap().asImageBitmap(),
+                    bitmap = image.toImageBitmap(),
                     contentDescription = title,
                     modifier = Modifier.size(260.dp)
                 )
