@@ -8,6 +8,7 @@ import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Scalar
+import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import kotlin.math.max
 import kotlin.math.min
@@ -59,6 +60,13 @@ object WatermarkDetector {
             Imgproc.cvtColor(watermarkMat, watermarkBgr, Imgproc.COLOR_RGBA2BGR)
             Core.extractChannel(watermarkMat, alphaChannel, 3)
             Imgproc.threshold(alphaChannel, mask, alphaThreshold, 255.0, Imgproc.THRESH_BINARY)
+
+            val baseBrightness = Core.mean(baseGray).`val`[0]
+            val isDarkBackground = baseBrightness < 60.0
+
+            val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+            clahe.apply(baseGray, baseGray)
+            clahe.apply(watermarkGray, watermarkGray)
 
             Core.findNonZero(mask, nonZero)
             if (nonZero.empty()) {
@@ -121,7 +129,9 @@ object WatermarkDetector {
             combinedResult = Mat()
             Core.addWeighted(resultGray, 0.6, colorAccumulation, 0.4, 0.0, combinedResult)
             val temp = Mat()
-            Core.addWeighted(combinedResult, 0.8, resultEdges, 0.2, 0.0, temp)
+            val edgeWeight = if (isDarkBackground) 0.35 else 0.2
+            val textureWeight = 1.0 - edgeWeight
+            Core.addWeighted(combinedResult, textureWeight, resultEdges, edgeWeight, 0.0, temp)
             combinedResult.release()
             combinedResult = temp
             Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
@@ -132,12 +142,13 @@ object WatermarkDetector {
             val suppressionRadiusY = watermarkGrayRoi.rows() / 2
             val maxResultX = (combinedResult.cols() - 1).toDouble().coerceAtLeast(0.0)
             val maxResultY = (combinedResult.rows() - 1).toDouble().coerceAtLeast(0.0)
+            val effectiveThreshold = if (isDarkBackground) matchThreshold * 0.9 else matchThreshold
 
             var iterations = 0
             while (iterations < maxResults) {
                 val minMax = Core.minMaxLoc(combinedResult)
                 val maxVal = minMax.maxVal
-                if (maxVal < matchThreshold) {
+                if (maxVal < effectiveThreshold) {
                     break
                 }
                 val maxLoc: Point = minMax.maxLoc
