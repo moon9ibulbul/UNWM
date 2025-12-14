@@ -9,8 +9,8 @@ import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
+import org.opencv.imgproc.CLAHE
 import org.opencv.imgproc.Imgproc
-import org.opencv.photo.CLAHE
 import kotlin.math.max
 import kotlin.math.min
 
