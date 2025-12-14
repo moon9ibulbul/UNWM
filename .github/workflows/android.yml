@@ -1,7 +1,6 @@
 name: Android Debug APK
 
 on:
-  workflow_dispatch:
   push:
     paths:
       - 'android-app/**'
