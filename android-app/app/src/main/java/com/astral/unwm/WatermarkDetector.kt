@@ -43,6 +43,7 @@ object WatermarkDetector {
         val nonZero = Mat()
         val baseGradient = Mat()
         val brightnessMap = Mat()
+        val watermarkGradient = Mat()
         var watermarkGrayRoi = Mat()
         var watermarkMaskRoi = Mat()
         var watermarkBgrRoi = Mat()
@@ -67,7 +68,7 @@ object WatermarkDetector {
             watermarkMaskRoi = Mat(mask, roiRect).clone()
             watermarkBgrRoi = Mat(watermarkBgr, roiRect).clone()
 
-            val watermarkGradient = computeGradientMagnitude(watermarkGrayRoi)
+            computeGradientMagnitude(watermarkGrayRoi, watermarkGradient)
 
             // Build a soft brightness map to decide when to switch into the dark-focused pipeline.
             Imgproc.blur(baseGray, brightnessMap, org.opencv.core.Size(15.0, 15.0))
@@ -291,7 +292,7 @@ object WatermarkDetector {
         val x1 = min(map.cols() - 1.0, location.x + templSize.width / 4).roundToInt()
         val y1 = min(map.rows() - 1.0, location.y + templSize.height / 4).roundToInt()
         val roi = Mat(map, Rect(x0, y0, max(1, x1 - x0 + 1), max(1, y1 - y0 + 1)))
-        val mean = Imgproc.mean(roi).`val`[0]
+        val mean = Core.mean(roi).`val`[0]
         roi.release()
         return mean
     }
