@@ -294,7 +294,8 @@ fun UnwatermarkerScreen() {
             } else {
                 primaryDetections
             }
-            val orderedDetections = candidateDetections
+            val visibleDetections = candidateDetections.filter { it.score >= threshold }
+            val orderedDetections = visibleDetections
                 .map { detection ->
                     val guessedAlpha = if (autoGuess) {
                         WatermarkAlphaGuesser.guessAlpha(
@@ -1894,7 +1895,7 @@ private fun AppFooter(modifier: Modifier = Modifier) {
                     append("AstralExpress")
                 }
                 pop()
-                append(" v1.6.5")
+                append(" v1.6.6")
             }
         }
     }

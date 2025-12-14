@@ -7,8 +7,10 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Rect
+import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import org.opencv.photo.CLAHE
 import kotlin.math.max
 import kotlin.math.min
 
@@ -137,6 +139,8 @@ object WatermarkDetector {
                 roiMat.copyTo(preprocessed)
                 if (brightness < 60.0) {
                     clahe.apply(roiMat, preprocessed)
+                } else if (brightness > 190.0) {
+                    Core.bitwise_not(roiMat, preprocessed)
                 }
 
                 val tempResult = Mat()
@@ -186,8 +190,11 @@ object WatermarkDetector {
                 clahe.apply(roiGray, roiGrayProcessed)
             }
 
-            val roiHighPass = highPass(roiGrayProcessed)
-            val roiGradient = gradientMagnitude(roiGrayProcessed)
+            val normalizedRoi = zeroMeanNormalize(roiGrayProcessed)
+            val invertedRoi = invertAndBalance(roiGrayProcessed, clahe)
+
+            val roiHighPass = highPass(normalizedRoi)
+            val roiGradient = gradientMagnitude(normalizedRoi)
 
             var bestTextureScore = Double.NEGATIVE_INFINITY
             var bestCombinedScore = Double.NEGATIVE_INFINITY
@@ -206,16 +213,33 @@ object WatermarkDetector {
                     continue
                 }
 
-                val scaledTplHighPass = highPass(scaledTplGray)
-                val scaledTplGradient = gradientMagnitude(scaledTplGray)
+                val normalizedTpl = zeroMeanNormalize(scaledTplGray)
+                val invertedTplRaw = invertMat(scaledTplGray)
+                val invertedTpl = zeroMeanNormalize(invertedTplRaw)
+
+                val scaledTplHighPass = highPass(normalizedTpl)
+                val scaledTplGradient = gradientMagnitude(normalizedTpl)
 
                 val textureMatch = matchScoreWithLocation(
-                    roiGrayProcessed,
-                    scaledTplGray,
+                    normalizedRoi,
+                    normalizedTpl,
                     scaledTplMask,
                     Imgproc.TM_CCORR_NORMED
                 )
+                val invertedMatch = matchScoreWithLocation(
+                    invertedRoi,
+                    invertedTpl,
+                    scaledTplMask,
+                    Imgproc.TM_CCORR_NORMED
+                )
+
                 val textureScore = sanitizeScore(textureMatch.score, 0.0)
+                val invertedScore = sanitizeScore(invertedMatch.score, 0.0)
+                val (dominantScore, dominantLocation) = if (textureScore >= invertedScore) {
+                    textureScore to textureMatch.location
+                } else {
+                    invertedScore to invertedMatch.location
+                }
 
                 val highPassScore = matchScore(
                     roiHighPass,
@@ -231,12 +255,12 @@ object WatermarkDetector {
                     Imgproc.TM_CCORR_NORMED
                 )
 
-                val combinedScore = textureScore * 0.5 + gradientScore * 0.3 + highPassScore * 0.2
+                val combinedScore = dominantScore * 0.45 + gradientScore * 0.35 + highPassScore * 0.20
 
-                val currentLocation = textureMatch.location
+                val currentLocation = dominantLocation
 
-                if (textureScore > bestTextureScore || (bestLocation == null && currentLocation != null)) {
-                    bestTextureScore = textureScore
+                if (dominantScore > bestTextureScore || (bestLocation == null && currentLocation != null)) {
+                    bestTextureScore = dominantScore
                     bestLocation = currentLocation
                 }
 
@@ -252,8 +276,11 @@ object WatermarkDetector {
 
                 scaledTplGray.release()
                 scaledTplMask.release()
+                normalizedTpl.release()
+                invertedTpl.release()
                 scaledTplHighPass.release()
                 scaledTplGradient.release()
+                invertedTplRaw.release()
             }
 
             val safeBestTexture = sanitizeScore(bestTextureScore, 0.0)
@@ -265,8 +292,8 @@ object WatermarkDetector {
             val safeSecondCombined = sanitizeScore(secondCombinedScore)
             val confidenceGap = safeBestCombined - safeSecondCombined
             if (bestLocation != null) {
-                val accepted = safeBestTexture >= matchThreshold ||
-                    (safeBestCombined >= matchThreshold * 0.85 && confidenceGap >= 0.05)
+                val accepted = (safeBestTexture >= matchThreshold || safeBestCombined >= matchThreshold) &&
+                    confidenceGap >= 0.02
 
                 if (accepted) {
                     val absoluteX = bestLocation!!.x + expandedRect.x - tplOffset.x
@@ -286,12 +313,42 @@ object WatermarkDetector {
             }
 
             roiGrayProcessed.release()
+            normalizedRoi.release()
+            invertedRoi.release()
             roiHighPass.release()
             roiGradient.release()
             roiGray.release()
         }
 
         return detections.sortedByDescending { it.score }.take(maxResults)
+    }
+
+    private fun invertMat(src: Mat): Mat {
+        val inverted = Mat()
+        Core.bitwise_not(src, inverted)
+        return inverted
+    }
+
+    private fun invertAndBalance(src: Mat, clahe: CLAHE): Mat {
+        val inverted = invertMat(src)
+        val balanced = Mat()
+        clahe.apply(inverted, balanced)
+        inverted.release()
+        return balanced
+    }
+
+    private fun zeroMeanNormalize(src: Mat): Mat {
+        val floatMat = Mat()
+        src.convertTo(floatMat, CvType.CV_32F)
+        val mean = Core.mean(floatMat).`val`[0]
+        Core.subtract(floatMat, Scalar(mean), floatMat)
+        val normalized = Mat()
+        Core.normalize(floatMat, normalized, 0.0, 255.0, Core.NORM_MINMAX)
+        val result = Mat()
+        normalized.convertTo(result, CvType.CV_8U)
+        floatMat.release()
+        normalized.release()
+        return result
     }
 
     private fun highPass(src: Mat): Mat {
