@@ -110,6 +110,10 @@ object WatermarkDetector {
     private data class Candidate(val rect: Rect, val score: Double, val brightness: Double)
     private data class MatchResult(val score: Double, val location: Point)
 
+    private fun sanitizeScore(score: Double, fallback: Double = Double.NEGATIVE_INFINITY): Double {
+        return if (score.isFinite()) score else fallback
+    }
+
     private fun coarseCandidates(baseGray: Mat, tplGray: Mat, tplMask: Mat): List<Candidate> {
         val gridWidth = baseGray.cols() / COARSE_GRID
         val gridHeight = baseGray.rows() / COARSE_GRID
@@ -211,7 +215,7 @@ object WatermarkDetector {
                     scaledTplMask,
                     Imgproc.TM_CCORR_NORMED
                 )
-                val textureScore = textureMatch.score
+                val textureScore = sanitizeScore(textureMatch.score, 0.0)
 
                 val highPassScore = matchScore(
                     roiHighPass,
@@ -252,10 +256,17 @@ object WatermarkDetector {
                 scaledTplGradient.release()
             }
 
-            val confidenceGap = bestCombinedScore - secondCombinedScore
+            val safeBestTexture = sanitizeScore(bestTextureScore, 0.0)
+            val safeBestCombined = when {
+                bestCombinedScore.isFinite() -> bestCombinedScore
+                safeBestTexture.isFinite() -> safeBestTexture
+                else -> 0.0
+            }
+            val safeSecondCombined = sanitizeScore(secondCombinedScore)
+            val confidenceGap = safeBestCombined - safeSecondCombined
             if (bestLocation != null) {
-                val accepted = bestTextureScore >= matchThreshold ||
-                    (bestCombinedScore >= matchThreshold * 0.85 && confidenceGap >= 0.05)
+                val accepted = safeBestTexture >= matchThreshold ||
+                    (safeBestCombined >= matchThreshold * 0.85 && confidenceGap >= 0.05)
 
                 if (accepted) {
                     val absoluteX = bestLocation!!.x + expandedRect.x - tplOffset.x
@@ -264,7 +275,7 @@ object WatermarkDetector {
                         WatermarkDetection(
                             offsetX = absoluteX.toFloat(),
                             offsetY = absoluteY.toFloat(),
-                            score = bestCombinedScore.toFloat()
+                            score = safeBestCombined.toFloat()
                         )
                     )
 
@@ -325,7 +336,7 @@ object WatermarkDetector {
         Imgproc.matchTemplate(image, template, result, method, mask)
         val maxVal = Core.minMaxLoc(result).maxVal
         result.release()
-        return maxVal
+        return sanitizeScore(maxVal, 0.0)
     }
 
     private fun matchScoreWithLocation(
@@ -338,7 +349,7 @@ object WatermarkDetector {
         Imgproc.matchTemplate(image, template, result, method, mask)
         val minMaxLoc = Core.minMaxLoc(result)
         result.release()
-        return MatchResult(minMaxLoc.maxVal, minMaxLoc.maxLoc)
+        return MatchResult(sanitizeScore(minMaxLoc.maxVal, 0.0), minMaxLoc.maxLoc)
     }
 
     private fun expandRect(rect: Rect, tplSize: Size, image: Mat): Rect {
