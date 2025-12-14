@@ -190,7 +190,7 @@ fun UnwatermarkerScreen() {
     var autoGuessAlpha by remember { mutableStateOf(false) }
     var transparencyThreshold by remember { mutableFloatStateOf(0f) }
     var opaqueThreshold by remember { mutableFloatStateOf(255f) }
-    var detectionThreshold by remember { mutableFloatStateOf(0.9f) }
+    var detectionThreshold by remember { mutableFloatStateOf(0.85f) }
 
     var isProcessing by remember { mutableStateOf(false) }
     var lastToastMessage by remember { mutableStateOf<String?>(null) }
@@ -294,7 +294,10 @@ fun UnwatermarkerScreen() {
             } else {
                 primaryDetections
             }
-            val orderedDetections = candidateDetections
+            val filteredDetections = candidateDetections.filter { detection ->
+                detection.score.isFinite() && detection.score >= threshold
+            }
+            val orderedDetections = filteredDetections
                 .map { detection ->
                     val guessedAlpha = if (autoGuess) {
                         WatermarkAlphaGuesser.guessAlpha(
