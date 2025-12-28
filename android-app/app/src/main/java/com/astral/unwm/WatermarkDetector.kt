@@ -8,6 +8,8 @@ import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Scalar
+import org.opencv.core.Size
+import org.opencv.imgproc.CLAHE
 import org.opencv.imgproc.Imgproc
 import kotlin.math.max
 import kotlin.math.min
@@ -47,6 +49,7 @@ object WatermarkDetector {
         var watermarkGrayRoi = Mat()
         var watermarkMaskRoi = Mat()
         var watermarkBgrRoi = Mat()
+        val baseClahe = Mat()
 
         return try {
             Utils.bitmapToMat(base, baseMat)
@@ -71,10 +74,17 @@ object WatermarkDetector {
             computeGradientMagnitude(watermarkGrayRoi, watermarkGradient)
 
             // Build a soft brightness map to decide when to switch into the dark-focused pipeline.
-            Imgproc.blur(baseGray, brightnessMap, org.opencv.core.Size(15.0, 15.0))
+            Imgproc.blur(baseGray, brightnessMap, Size(15.0, 15.0))
 
-            // Gradient magnitude helps on dark backgrounds where color/gray contrast is weak.
-            computeGradientMagnitude(baseGray, baseGradient)
+            // Denoise baseGray before gradient computation to reduce noise in dark/noisy areas
+            val baseGraySmoothed = Mat()
+            Imgproc.GaussianBlur(baseGray, baseGraySmoothed, Size(3.0, 3.0), 0.0)
+            computeGradientMagnitude(baseGraySmoothed, baseGradient)
+            baseGraySmoothed.release()
+
+            // Create CLAHE enhanced version of baseGray to improve detection in dark/low-contrast areas
+            val clahe: CLAHE = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+            clahe.apply(baseGray, baseClahe)
 
             val detections = mutableListOf<WatermarkDetection>()
             val scales = doubleArrayOf(0.85, 0.95, 1.0, 1.05, 1.15)
@@ -99,9 +109,10 @@ object WatermarkDetector {
                         continue
                     }
 
+                    // Standard Gray Match
                     val grayZeroMean = zeroMeanMasked(scaledGray, scaledMask)
                     val baseBlurred = Mat()
-                    Imgproc.blur(baseGray, baseBlurred, org.opencv.core.Size(scaledGray.cols().toDouble(), scaledGray.rows().toDouble()))
+                    Imgproc.blur(baseGray, baseBlurred, Size(scaledGray.cols().toDouble(), scaledGray.rows().toDouble()))
                     val baseZeroMean = Mat()
                     Core.subtract(baseGray, baseBlurred, baseZeroMean)
                     baseZeroMean.convertTo(baseZeroMean, CvType.CV_32F, 1.0 / 255.0)
@@ -109,6 +120,26 @@ object WatermarkDetector {
 
                     val resultGray = Mat()
                     Imgproc.matchTemplate(baseZeroMean, grayZeroMean, resultGray, Imgproc.TM_CCORR_NORMED, scaledMask)
+
+                    // CLAHE Enhanced Match
+                    val baseClaheBlurred = Mat()
+                    Imgproc.blur(baseClahe, baseClaheBlurred, Size(scaledGray.cols().toDouble(), scaledGray.rows().toDouble()))
+                    val baseClaheZeroMean = Mat()
+                    Core.subtract(baseClahe, baseClaheBlurred, baseClaheZeroMean)
+                    baseClaheZeroMean.convertTo(baseClaheZeroMean, CvType.CV_32F, 1.0 / 255.0)
+                    baseClaheBlurred.release()
+
+                    val resultClahe = Mat()
+                    Imgproc.matchTemplate(baseClaheZeroMean, grayZeroMean, resultClahe, Imgproc.TM_CCORR_NORMED, scaledMask)
+                    baseClaheZeroMean.release()
+
+                    // Handle Polarity (Inverted Watermark) and Combine
+                    // Abs allows detecting watermarks that are inverted (light on dark vs dark on light)
+                    Core.absdiff(resultGray, Scalar(0.0), resultGray)
+                    Core.absdiff(resultClahe, Scalar(0.0), resultClahe)
+                    // Take the best score between Standard and CLAHE
+                    Core.max(resultGray, resultClahe, resultGray)
+                    resultClahe.release()
 
                     val colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
                     for (channel in 0 until 3) {
@@ -120,6 +151,10 @@ object WatermarkDetector {
                         Core.extractChannel(scaledBgr, wmChannel, channel)
                         val wmZeroMean = zeroMeanMasked(wmChannel, scaledMask)
                         Imgproc.matchTemplate(baseChannel, wmZeroMean, channelResult, Imgproc.TM_CCORR_NORMED, scaledMask)
+
+                        // Handle Polarity for Color
+                        Core.absdiff(channelResult, Scalar(0.0), channelResult)
+
                         Core.add(colorAccumulation, channelResult, colorAccumulation)
                         baseChannel.release()
                         wmChannel.release()
@@ -212,6 +247,7 @@ object WatermarkDetector {
             watermarkMaskRoi.release()
             watermarkBgrRoi.release()
             watermarkGradient.release()
+            baseClahe.release()
         }
     }
 
@@ -247,7 +283,7 @@ object WatermarkDetector {
     }
 
     private fun resizeWithMask(source: Mat, mask: Mat, out: Mat, outMask: Mat, scale: Double) {
-        val size = org.opencv.core.Size(
+        val size = Size(
             (source.cols() * scale).roundToInt().toDouble().coerceAtLeast(1.0),
             (source.rows() * scale).roundToInt().toDouble().coerceAtLeast(1.0)
         )
@@ -276,7 +312,7 @@ object WatermarkDetector {
         return candidates.sortedByDescending { it.first }.take(topN).map { it.second }
     }
 
-    private fun refineWindow(candidate: Point, resultSize: org.opencv.core.Size, templSize: org.opencv.core.Size): Rect {
+    private fun refineWindow(candidate: Point, resultSize: Size, templSize: Size): Rect {
         val halfW = (templSize.width / 2).roundToInt()
         val halfH = (templSize.height / 2).roundToInt()
         val x0 = max(0.0, candidate.x - halfW).roundToInt()
@@ -286,7 +322,7 @@ object WatermarkDetector {
         return Rect(x0, y0, max(1, x1 - x0 + 1), max(1, y1 - y0 + 1))
     }
 
-    private fun localBrightness(map: Mat, location: Point, templSize: org.opencv.core.Size): Double {
+    private fun localBrightness(map: Mat, location: Point, templSize: Size): Double {
         val x0 = max(0.0, location.x - templSize.width / 4).roundToInt()
         val y0 = max(0.0, location.y - templSize.height / 4).roundToInt()
         val x1 = min(map.cols() - 1.0, location.x + templSize.width / 4).roundToInt()
