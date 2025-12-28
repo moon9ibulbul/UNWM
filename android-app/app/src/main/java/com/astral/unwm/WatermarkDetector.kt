@@ -108,10 +108,9 @@ object WatermarkDetector {
             Core.bitwise_not(baseBgr, baseBgrInv)
             Core.bitwise_not(watermarkBgrRoi, watermarkBgrRoiInv)
 
-            // 4. Edges (Improved Thresholds for better sensitivity)
-            // Use 30/100 instead of 40/120 to catch fainter edges
-            Imgproc.Canny(baseGray, baseEdges, 30.0, 100.0)
-            Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 30.0, 100.0)
+            // 4. Edges (Reverted thresholds to avoid noise issues)
+            Imgproc.Canny(baseGray, baseEdges, 40.0, 120.0)
+            Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 40.0, 120.0)
             Core.bitwise_and(watermarkEdges, watermarkMaskRoi, watermarkEdges)
 
             // 5. Match Gray (Normal)
@@ -123,6 +122,7 @@ object WatermarkDetector {
                 Imgproc.TM_CCORR_NORMED,
                 watermarkMaskRoi
             )
+            cleanResult(resultGray)
 
             // 6. Match Gray (Inverted)
             resultGrayInv = Mat()
@@ -133,6 +133,7 @@ object WatermarkDetector {
                 Imgproc.TM_CCORR_NORMED,
                 watermarkMaskRoi
             )
+            cleanResult(resultGrayInv)
 
             // 7. Combine Gray (Max)
             resultGrayMax = Mat()
@@ -158,6 +159,7 @@ object WatermarkDetector {
                 resultEdges,
                 Imgproc.TM_CCORR_NORMED
             )
+            cleanResult(resultEdges)
 
             // 12. Final Combination
             combinedResult = Mat()
@@ -260,11 +262,21 @@ object WatermarkDetector {
                 Imgproc.TM_CCORR_NORMED,
                 mask
             )
+            cleanResult(channelResult)
             Core.add(accum, channelResult, accum)
             baseChannel.release()
             watermarkChannel.release()
             channelResult.release()
         }
         Core.multiply(accum, Scalar(1.0 / 3.0), accum)
+    }
+
+    private fun cleanResult(mat: Mat) {
+        val mask = Mat()
+        // Checks for NaNs. NaN != NaN is True for CMP_NE.
+        // So this mask will be 255 where NaN exists.
+        Core.compare(mat, mat, mask, Core.CMP_NE)
+        mat.setTo(Scalar(0.0), mask)
+        mask.release()
     }
 }
