@@ -18,6 +18,7 @@ private const val MAX_DETECTIONS_PER_IMAGE = 10
 
 /**
  * Detects watermark positions using OpenCV's template matching with masking.
+ * Includes strategies for both light and dark backgrounds by checking inverted images.
  */
 object WatermarkDetector {
     fun detect(
@@ -31,39 +32,65 @@ object WatermarkDetector {
             return emptyList()
         }
 
+        // --- Mats for Normal Pass ---
         val baseMat = Mat()
         val watermarkMat = Mat()
         val baseGray = Mat()
         val watermarkGray = Mat()
         val baseBgr = Mat()
         val watermarkBgr = Mat()
+
+        // --- Mats for Inverted Pass ---
+        val baseGrayInv = Mat()
+        val watermarkGrayInv = Mat()
+        val baseBgrInv = Mat()
+        val watermarkBgrInv = Mat()
+
+        // --- Common ---
         val alphaChannel = Mat()
         val mask = Mat()
         val nonZero = Mat()
-        val baseEdges = Mat()
+
+        // --- ROIs ---
         var watermarkGrayRoi = Mat()
         var watermarkMaskRoi = Mat()
         var watermarkBgrRoi = Mat()
+        var watermarkGrayRoiInv = Mat()
+        var watermarkBgrRoiInv = Mat()
+
+        // --- Results ---
         var resultGray = Mat()
+        var resultGrayInv = Mat()
+        var resultGrayMax = Mat()
+
         var colorAccumulation = Mat()
+        var colorAccumulationInv = Mat()
+        var colorAccumulationMax = Mat()
+
+        val baseEdges = Mat()
+        val watermarkEdges = Mat()
         var resultEdges = Mat()
+
         var combinedResult = Mat()
 
         return try {
             Utils.bitmapToMat(base, baseMat)
             Utils.bitmapToMat(watermark, watermarkMat)
 
+            // 1. Prepare Normal Images
             Imgproc.cvtColor(baseMat, baseGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(watermarkMat, watermarkGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(baseMat, baseBgr, Imgproc.COLOR_RGBA2BGR)
             Imgproc.cvtColor(watermarkMat, watermarkBgr, Imgproc.COLOR_RGBA2BGR)
+
+            // 2. Prepare Mask
             Core.extractChannel(watermarkMat, alphaChannel, 3)
             Imgproc.threshold(alphaChannel, mask, alphaThreshold, 255.0, Imgproc.THRESH_BINARY)
-
             Core.findNonZero(mask, nonZero)
             if (nonZero.empty()) {
                 return emptyList()
             }
+
             val roiRect: Rect = Imgproc.boundingRect(nonZero)
             watermarkGrayRoi = Mat(watermarkGray, roiRect).clone()
             watermarkMaskRoi = Mat(mask, roiRect).clone()
@@ -75,11 +102,19 @@ object WatermarkDetector {
                 return emptyList()
             }
 
-            Imgproc.Canny(baseGray, baseEdges, 40.0, 120.0)
-            val watermarkEdges = Mat()
-            Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 40.0, 120.0)
+            // 3. Prepare Inverted Images (for dark background handling)
+            Core.bitwise_not(baseGray, baseGrayInv)
+            Core.bitwise_not(watermarkGrayRoi, watermarkGrayRoiInv)
+            Core.bitwise_not(baseBgr, baseBgrInv)
+            Core.bitwise_not(watermarkBgrRoi, watermarkBgrRoiInv)
+
+            // 4. Edges (Improved Thresholds for better sensitivity)
+            // Use 30/100 instead of 40/120 to catch fainter edges
+            Imgproc.Canny(baseGray, baseEdges, 30.0, 100.0)
+            Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 30.0, 100.0)
             Core.bitwise_and(watermarkEdges, watermarkMaskRoi, watermarkEdges)
 
+            // 5. Match Gray (Normal)
             resultGray = Mat()
             Imgproc.matchTemplate(
                 baseGray,
@@ -89,27 +124,33 @@ object WatermarkDetector {
                 watermarkMaskRoi
             )
 
-            colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
-            for (channel in 0 until 3) {
-                val baseChannel = Mat()
-                val watermarkChannel = Mat()
-                val channelResult = Mat()
-                Core.extractChannel(baseBgr, baseChannel, channel)
-                Core.extractChannel(watermarkBgrRoi, watermarkChannel, channel)
-                Imgproc.matchTemplate(
-                    baseChannel,
-                    watermarkChannel,
-                    channelResult,
-                    Imgproc.TM_CCORR_NORMED,
-                    watermarkMaskRoi
-                )
-                Core.add(colorAccumulation, channelResult, colorAccumulation)
-                baseChannel.release()
-                watermarkChannel.release()
-                channelResult.release()
-            }
-            Core.multiply(colorAccumulation, Scalar(1.0 / 3.0), colorAccumulation)
+            // 6. Match Gray (Inverted)
+            resultGrayInv = Mat()
+            Imgproc.matchTemplate(
+                baseGrayInv,
+                watermarkGrayRoiInv,
+                resultGrayInv,
+                Imgproc.TM_CCORR_NORMED,
+                watermarkMaskRoi
+            )
 
+            // 7. Combine Gray (Max)
+            resultGrayMax = Mat()
+            Core.max(resultGray, resultGrayInv, resultGrayMax)
+
+            // 8. Match Color (Normal)
+            colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
+            processColorChannels(baseBgr, watermarkBgrRoi, watermarkMaskRoi, colorAccumulation)
+
+            // 9. Match Color (Inverted)
+            colorAccumulationInv = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
+            processColorChannels(baseBgrInv, watermarkBgrRoiInv, watermarkMaskRoi, colorAccumulationInv)
+
+            // 10. Combine Color (Max)
+            colorAccumulationMax = Mat()
+            Core.max(colorAccumulation, colorAccumulationInv, colorAccumulationMax)
+
+            // 11. Match Edges
             resultEdges = Mat()
             Imgproc.matchTemplate(
                 baseEdges,
@@ -118,14 +159,17 @@ object WatermarkDetector {
                 Imgproc.TM_CCORR_NORMED
             )
 
+            // 12. Final Combination
             combinedResult = Mat()
-            Core.addWeighted(resultGray, 0.6, colorAccumulation, 0.4, 0.0, combinedResult)
+            // Weight: Gray(Max) 60% + Color(Max) 40%
+            Core.addWeighted(resultGrayMax, 0.6, colorAccumulationMax, 0.4, 0.0, combinedResult)
+
+            // Weight: (Gray+Color) 80% + Edges 20%
             val temp = Mat()
             Core.addWeighted(combinedResult, 0.8, resultEdges, 0.2, 0.0, temp)
             combinedResult.release()
             combinedResult = temp
             Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
-            watermarkEdges.release()
 
             val detections = mutableListOf<WatermarkDetection>()
             val suppressionRadiusX = watermarkGrayRoi.cols() / 2
@@ -171,17 +215,56 @@ object WatermarkDetector {
             watermarkGray.release()
             baseBgr.release()
             watermarkBgr.release()
+
+            baseGrayInv.release()
+            watermarkGrayInv.release()
+            baseBgrInv.release()
+            watermarkBgrInv.release()
+
             alphaChannel.release()
             mask.release()
             nonZero.release()
             watermarkGrayRoi.release()
             watermarkMaskRoi.release()
             watermarkBgrRoi.release()
+            watermarkGrayRoiInv.release()
+            watermarkBgrRoiInv.release()
+
             baseEdges.release()
+            watermarkEdges.release()
+
             resultGray.release()
+            resultGrayInv.release()
+            resultGrayMax.release()
+
             colorAccumulation.release()
+            colorAccumulationInv.release()
+            colorAccumulationMax.release()
+
             resultEdges.release()
             combinedResult.release()
         }
+    }
+
+    private fun processColorChannels(base: Mat, wmRoi: Mat, mask: Mat, accum: Mat) {
+        for (channel in 0 until 3) {
+            val baseChannel = Mat()
+            val watermarkChannel = Mat()
+            val channelResult = Mat()
+            Core.extractChannel(base, baseChannel, channel)
+            Core.extractChannel(wmRoi, watermarkChannel, channel)
+            Imgproc.matchTemplate(
+                baseChannel,
+                watermarkChannel,
+                channelResult,
+                Imgproc.TM_CCORR_NORMED,
+                mask
+            )
+            Core.add(accum, channelResult, accum)
+            baseChannel.release()
+            watermarkChannel.release()
+            channelResult.release()
+        }
+        Core.multiply(accum, Scalar(1.0 / 3.0), accum)
     }
 }
