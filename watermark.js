@@ -1362,7 +1362,7 @@ async function automaticPlacement_on_load(resolve) {
     let rgbaPlanes = new cv.MatVector();
     // Split the Mat
     cv.split(templ, rgbaPlanes);
-    // Get R channel
+    // Get A channel
     let alpha = rgbaPlanes.get(3);
     let thresh = new cv.Mat();
     cv.threshold(alpha, thresh, 5, 255, cv.THRESH_BINARY);
@@ -1370,14 +1370,81 @@ async function automaticPlacement_on_load(resolve) {
     alpha.delete();
     let mask = new cv.Mat();
     cv.cvtColor(thresh, mask, cv.COLOR_GRAY2RGBA, 0);
-    thresh.delete();
+    // thresh is kept for edge matching mask
 
+    // --- Method A: Standard Match ---
     let dst = new cv.Mat();
     cv.matchTemplate(inImg, templ, dst, cv.TM_CCOEFF_NORMED, mask);
-    let result = cv.minMaxLoc(dst).maxLoc;
-    inImg.delete(); templ.delete(); dst.delete(); mask.delete();
-    wm_x = result.x
-    wm_y = result.y
+    let resultStandard = cv.minMaxLoc(dst);
+    let maxValStandard = resultStandard.maxVal;
+    let maxLocStandard = resultStandard.maxLoc;
+
+    // --- Method B: Inverted Image Match ---
+    // Useful for white text on dark background when template is white
+    let inImgRGB = new cv.Mat();
+    cv.cvtColor(inImg, inImgRGB, cv.COLOR_RGBA2RGB);
+    cv.bitwise_not(inImgRGB, inImgRGB);
+    let inImgInv = new cv.Mat();
+    cv.cvtColor(inImgRGB, inImgInv, cv.COLOR_RGB2RGBA);
+    inImgRGB.delete();
+
+    let dstInv = new cv.Mat();
+    cv.matchTemplate(inImgInv, templ, dstInv, cv.TM_CCOEFF_NORMED, mask);
+    let resultInv = cv.minMaxLoc(dstInv);
+    let maxValInv = resultInv.maxVal;
+    let maxLocInv = resultInv.maxLoc;
+    inImgInv.delete(); dstInv.delete();
+
+    // --- Method C: Edge Match (Canny) ---
+    // Useful for noisy backgrounds
+    let inImgGray = new cv.Mat();
+    cv.cvtColor(inImg, inImgGray, cv.COLOR_RGBA2GRAY);
+    let templGray = new cv.Mat();
+    cv.cvtColor(templ, templGray, cv.COLOR_RGBA2GRAY);
+
+    let inImgEdges = new cv.Mat();
+    cv.Canny(inImgGray, inImgEdges, 50, 200);
+    let templEdges = new cv.Mat();
+    cv.Canny(templGray, templEdges, 50, 200);
+
+    let dstEdge = new cv.Mat();
+    // Use TM_CCORR_NORMED for edges with mask
+    cv.matchTemplate(inImgEdges, templEdges, dstEdge, cv.TM_CCORR_NORMED, thresh);
+
+    let resultEdge = cv.minMaxLoc(dstEdge);
+    let maxValEdge = resultEdge.maxVal;
+    let maxLocEdge = resultEdge.maxLoc;
+
+    inImgGray.delete(); templGray.delete(); inImgEdges.delete(); templEdges.delete(); dstEdge.delete();
+
+    // --- Decision Logic ---
+    console.log(`Match Scores - Standard: ${maxValStandard.toFixed(4)}, Inv: ${maxValInv.toFixed(4)}, Edge: ${maxValEdge.toFixed(4)}`);
+
+    let finalLoc = maxLocStandard;
+
+    // Prioritize Standard if it's very good (stability)
+    if (maxValStandard >= 0.8) {
+        finalLoc = maxLocStandard;
+    } else {
+        // Fallback checks
+        let bestScore = maxValStandard;
+
+        // If Inverted is significantly better
+        if (maxValInv > bestScore && maxValInv > 0.5) {
+            bestScore = maxValInv;
+            finalLoc = maxLocInv;
+        }
+
+        // If Edge is better (and reliable)
+        // Edge matching scores are often lower, so threshold is lower
+        if (maxValEdge > 0.5 && maxValEdge > bestScore) {
+            finalLoc = maxLocEdge;
+        }
+    }
+
+    inImg.delete(); templ.delete(); dst.delete(); mask.delete(); thresh.delete();
+    wm_x = finalLoc.x
+    wm_y = finalLoc.y
     updateWatermarkPosition()
     if (resolve) resolve('why');
     return
