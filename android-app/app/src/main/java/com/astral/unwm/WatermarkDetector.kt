@@ -130,6 +130,8 @@ object WatermarkDetector {
                 Imgproc.TM_CCORR_NORMED,
                 watermarkMaskRoi
             )
+            // Patch NaNs in resultGray
+            Core.patchNaNs(resultGray, 0.0)
 
             colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
             for (channel in 0 until 3) {
@@ -151,6 +153,8 @@ object WatermarkDetector {
                 channelResult.release()
             }
             Core.multiply(colorAccumulation, Scalar(1.0 / 3.0), colorAccumulation)
+            // Patch NaNs in colorAccumulation
+            Core.patchNaNs(colorAccumulation, 0.0)
 
             resultEdges = Mat()
             Imgproc.matchTemplate(
@@ -159,6 +163,8 @@ object WatermarkDetector {
                 resultEdges,
                 Imgproc.TM_CCORR_NORMED
             )
+            // Patch NaNs in resultEdges
+            Core.patchNaNs(resultEdges, 0.0)
 
             combinedResult = Mat()
             Core.addWeighted(resultGray, 0.6, colorAccumulation, 0.4, 0.0, combinedResult)
@@ -166,6 +172,8 @@ object WatermarkDetector {
             Core.addWeighted(combinedResult, 0.8, resultEdges, 0.2, 0.0, temp)
             combinedResult.release()
             combinedResult = temp
+
+            // Normalize handles NaN safely? No, it propagates. So we already patched them.
             Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
 
             val detections = mutableListOf<WatermarkDetection>()
@@ -178,7 +186,9 @@ object WatermarkDetector {
             while (iterations < maxResults) {
                 val minMax = Core.minMaxLoc(combinedResult)
                 val maxVal = minMax.maxVal
-                if (maxVal < matchThreshold) {
+
+                // Double.isNaN check just in case minMaxLoc returns NaN
+                if (java.lang.Double.isNaN(maxVal) || maxVal < matchThreshold) {
                     break
                 }
                 val maxLoc: Point = minMax.maxLoc
