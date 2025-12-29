@@ -33,6 +33,51 @@ object WatermarkDetector {
 
         val baseMat = Mat()
         val watermarkMat = Mat()
+
+        return try {
+            Utils.bitmapToMat(base, baseMat)
+            Utils.bitmapToMat(watermark, watermarkMat)
+
+            var detections = detectOnMats(
+                baseMat,
+                watermarkMat,
+                maxResults,
+                matchThreshold,
+                alphaThreshold
+            )
+
+            if (detections.isEmpty()) {
+                val baseInverted = Mat()
+                val watermarkInverted = Mat()
+                try {
+                    invertColors(baseMat, baseInverted)
+                    invertColors(watermarkMat, watermarkInverted)
+                    detections = detectOnMats(
+                        baseInverted,
+                        watermarkInverted,
+                        maxResults,
+                        matchThreshold,
+                        alphaThreshold
+                    )
+                } finally {
+                    baseInverted.release()
+                    watermarkInverted.release()
+                }
+            }
+            detections
+        } finally {
+            baseMat.release()
+            watermarkMat.release()
+        }
+    }
+
+    private fun detectOnMats(
+        baseMat: Mat,
+        watermarkMat: Mat,
+        maxResults: Int,
+        matchThreshold: Double,
+        alphaThreshold: Double
+    ): List<WatermarkDetection> {
         val baseGray = Mat()
         val watermarkGray = Mat()
         val baseBgr = Mat()
@@ -41,6 +86,7 @@ object WatermarkDetector {
         val mask = Mat()
         val nonZero = Mat()
         val baseEdges = Mat()
+        val watermarkEdges = Mat()
         var watermarkGrayRoi = Mat()
         var watermarkMaskRoi = Mat()
         var watermarkBgrRoi = Mat()
@@ -50,9 +96,6 @@ object WatermarkDetector {
         var combinedResult = Mat()
 
         return try {
-            Utils.bitmapToMat(base, baseMat)
-            Utils.bitmapToMat(watermark, watermarkMat)
-
             Imgproc.cvtColor(baseMat, baseGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(watermarkMat, watermarkGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(baseMat, baseBgr, Imgproc.COLOR_RGBA2BGR)
@@ -76,7 +119,6 @@ object WatermarkDetector {
             }
 
             Imgproc.Canny(baseGray, baseEdges, 40.0, 120.0)
-            val watermarkEdges = Mat()
             Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 40.0, 120.0)
             Core.bitwise_and(watermarkEdges, watermarkMaskRoi, watermarkEdges)
 
@@ -125,7 +167,6 @@ object WatermarkDetector {
             combinedResult.release()
             combinedResult = temp
             Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
-            watermarkEdges.release()
 
             val detections = mutableListOf<WatermarkDetection>()
             val suppressionRadiusX = watermarkGrayRoi.cols() / 2
@@ -165,8 +206,6 @@ object WatermarkDetector {
 
             detections
         } finally {
-            baseMat.release()
-            watermarkMat.release()
             baseGray.release()
             watermarkGray.release()
             baseBgr.release()
@@ -174,6 +213,7 @@ object WatermarkDetector {
             alphaChannel.release()
             mask.release()
             nonZero.release()
+            watermarkEdges.release()
             watermarkGrayRoi.release()
             watermarkMaskRoi.release()
             watermarkBgrRoi.release()
@@ -182,6 +222,16 @@ object WatermarkDetector {
             colorAccumulation.release()
             resultEdges.release()
             combinedResult.release()
+        }
+    }
+
+    private fun invertColors(src: Mat, dst: Mat) {
+        Core.bitwise_not(src, dst)
+        if (src.channels() == 4) {
+            val alpha = Mat()
+            Core.extractChannel(src, alpha, 3)
+            Core.insertChannel(alpha, dst, 3)
+            alpha.release()
         }
     }
 }
