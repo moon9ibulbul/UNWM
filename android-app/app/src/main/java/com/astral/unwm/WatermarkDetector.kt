@@ -127,11 +127,11 @@ object WatermarkDetector {
                 baseGray,
                 watermarkGrayRoi,
                 resultGray,
-                Imgproc.TM_CCORR_NORMED,
+                Imgproc.TM_CCOEFF_NORMED,
                 watermarkMaskRoi
             )
-            // Patch NaNs in resultGray
-            Core.patchNaNs(resultGray, 0.0)
+            // Patch NaNs in resultGray (safeguard)
+            try { Core.patchNaNs(resultGray, 0.0) } catch (e: Exception) { }
 
             colorAccumulation = Mat.zeros(resultRows, resultCols, CvType.CV_32FC1)
             for (channel in 0 until 3) {
@@ -144,7 +144,7 @@ object WatermarkDetector {
                     baseChannel,
                     watermarkChannel,
                     channelResult,
-                    Imgproc.TM_CCORR_NORMED,
+                    Imgproc.TM_CCOEFF_NORMED,
                     watermarkMaskRoi
                 )
                 Core.add(colorAccumulation, channelResult, colorAccumulation)
@@ -153,28 +153,32 @@ object WatermarkDetector {
                 channelResult.release()
             }
             Core.multiply(colorAccumulation, Scalar(1.0 / 3.0), colorAccumulation)
-            // Patch NaNs in colorAccumulation
-            Core.patchNaNs(colorAccumulation, 0.0)
+            // Patch NaNs in colorAccumulation (safeguard)
+            try { Core.patchNaNs(colorAccumulation, 0.0) } catch (e: Exception) { }
 
             resultEdges = Mat()
+            // Edges are binary-ish (0 or 255), so CCORR is appropriate and efficient
             Imgproc.matchTemplate(
                 baseEdges,
                 watermarkEdges,
                 resultEdges,
                 Imgproc.TM_CCORR_NORMED
             )
-            // Patch NaNs in resultEdges
-            Core.patchNaNs(resultEdges, 0.0)
+            // Patch NaNs in resultEdges (safeguard)
+            try { Core.patchNaNs(resultEdges, 0.0) } catch (e: Exception) { }
 
             combinedResult = Mat()
+            // CCOEFF can be negative (mismatch). We only care about positive correlation.
+            // But negative values combined might lower the score, which is good.
             Core.addWeighted(resultGray, 0.6, colorAccumulation, 0.4, 0.0, combinedResult)
+
+            // For edges, we use CCORR which is [0, 1].
+            // For others, CCOEFF is [-1, 1].
+
             val temp = Mat()
             Core.addWeighted(combinedResult, 0.8, resultEdges, 0.2, 0.0, temp)
             combinedResult.release()
             combinedResult = temp
-
-            // Normalize handles NaN safely? No, it propagates. So we already patched them.
-            Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
 
             val detections = mutableListOf<WatermarkDetection>()
             val suppressionRadiusX = watermarkGrayRoi.cols() / 2
@@ -187,7 +191,6 @@ object WatermarkDetector {
                 val minMax = Core.minMaxLoc(combinedResult)
                 val maxVal = minMax.maxVal
 
-                // Double.isNaN check just in case minMaxLoc returns NaN
                 if (java.lang.Double.isNaN(maxVal) || maxVal < matchThreshold) {
                     break
                 }
