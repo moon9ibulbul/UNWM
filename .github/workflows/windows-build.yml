@@ -24,11 +24,11 @@ jobs:
 
     - name: Build with Gradle
       working-directory: ./windows
-      run: ./gradlew build
+      run: ./gradlew.bat build
 
     - name: Package Windows EXE
       working-directory: ./windows
-      run: ./gradlew packageReleaseExe
+      run: ./gradlew.bat packageReleaseExe
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4

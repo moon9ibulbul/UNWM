@@ -14,7 +14,7 @@ repositories {
 
 dependencies {
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3) // Add Material3 specifically
+    implementation(compose.material3)
     implementation("org.openpnp:opencv:4.9.0-0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.8.0")
@@ -34,6 +34,9 @@ compose.desktop {
                 menuGroup = "AstralUNWM"
                 upgradeUuid = "12345678-1234-1234-1234-123456789012"
             }
+        }
+        buildTypes.release.proguard {
+            isEnabled = false
         }
     }
 }
