@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -42,16 +43,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
 
 private const val AUTOMATION_ITEM_TIMEOUT_MS = 30_000L
-
-// Helper to bridge AWT BufferedImage to Compose ImageBitmap
-fun BufferedImage.toImageBitmap(): ImageBitmap {
-    val baos = ByteArrayOutputStream()
-    ImageIO.write(this, "png", baos)
-    val bytes = baos.toByteArray()
-    return org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
-}
 
 fun openFileDialog(
     title: String,
@@ -125,6 +119,7 @@ fun UnwatermarkerScreen() {
     var transparencyThreshold by remember { mutableStateOf(0f) }
     var opaqueThreshold by remember { mutableStateOf(255f) }
     var detectionThreshold by remember { mutableStateOf(0.9f) }
+    var isRealTimeUnwatermarking by remember { mutableStateOf(false) }
 
     var isProcessing by remember { mutableStateOf(false) }
     var lastToastMessage by remember { mutableStateOf<String?>(null) }
@@ -143,12 +138,56 @@ fun UnwatermarkerScreen() {
 
     val scope = rememberCoroutineScope()
 
+    // Real-time preview state
+    var realTimePreviewBitmap by remember { mutableStateOf<BufferedImage?>(null) }
+
     val maxOffsetX = baseBitmap?.width?.toFloat()?.takeIf { it > 0f } ?: 1000f
     val maxOffsetY = baseBitmap?.height?.toFloat()?.takeIf { it > 0f } ?: 1000f
 
     LaunchedEffect(maxOffsetX) { offsetX = offsetX.coerceIn(-maxOffsetX, maxOffsetX) }
-
     LaunchedEffect(maxOffsetY) { offsetY = offsetY.coerceIn(-maxOffsetY, maxOffsetY) }
+
+    // Real Time Unwatermarking Logic
+    LaunchedEffect(
+        isRealTimeUnwatermarking,
+        baseBitmap,
+        watermarkBitmap,
+        offsetX,
+        offsetY,
+        alphaAdjust,
+        transparencyThreshold,
+        opaqueThreshold,
+        autoGuessAlpha
+    ) {
+        if (!isRealTimeUnwatermarking || baseBitmap == null || watermarkBitmap == null) {
+            realTimePreviewBitmap = null
+            return@LaunchedEffect
+        }
+
+        // Debounce slightly to avoid heavy CPU usage during fast drag
+        delay(16)
+
+        val base = baseBitmap!!
+        val wm = watermarkBitmap!!
+        val cx = offsetX.roundToInt()
+        val cy = offsetY.roundToInt()
+        val alpha = alphaAdjust
+        val trans = transparencyThreshold.roundToInt()
+        val opaque = opaqueThreshold.roundToInt()
+
+        val processed = withContext(Dispatchers.Default) {
+            WatermarkRemover.removeWatermark(
+                base = base,
+                watermark = wm,
+                offsetX = cx,
+                offsetY = cy,
+                alphaAdjust = alpha,
+                transparencyThreshold = trans,
+                opaqueThreshold = opaque
+            )
+        }
+        realTimePreviewBitmap = processed
+    }
 
     fun updateBase(
         bitmap: BufferedImage?,
@@ -158,6 +197,7 @@ fun UnwatermarkerScreen() {
         baseBitmap = bitmap
         baseImageFile = file
         resultBitmap = null
+        realTimePreviewBitmap = null
         detectionState = DetectionState.Idle
         detectionResults = emptyList()
         detectionAlphaGuesses = emptyList()
@@ -494,96 +534,102 @@ fun UnwatermarkerScreen() {
     }
 
     Scaffold(snackbarHost = { /* Implement SnackbarHost if needed using a state */}) { padding ->
-        Column(
-            modifier =
-                Modifier.fillMaxSize()
-                    .padding(padding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        Row(
+            modifier = Modifier.fillMaxSize().padding(padding)
         ) {
-            if (lastToastMessage != null) {
-                Text(
-                    text = lastToastMessage!!,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier =
-                        Modifier.background(MaterialTheme.colorScheme.surfaceVariant).padding(8.dp)
-                )
-            }
-
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            // SIDEBAR
+            Column(
+                modifier =
+                    Modifier.weight(0.3f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Button(
-                    onClick = {
-                        val files = openFileDialog("Select Base Image")
-                        files.firstOrNull()?.let { file ->
-                            bulkQueue.clear()
-                            currentQueueItemName = null
-                            scope.launch {
-                                val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(file) }
-                                updateBase(bitmap, file)
-                            }
-                        }
-                    },
-                    enabled = !isAutomationRunning,
-                    modifier = Modifier.weight(1f, fill = true)
-                ) {
-                    Text("Select Image")
+                if (lastToastMessage != null) {
+                    Text(
+                        text = lastToastMessage!!,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier =
+                            Modifier.background(MaterialTheme.colorScheme.surfaceVariant).padding(8.dp)
+                    )
                 }
-                Button(
-                    onClick = {
-                        val files = openFileDialog("Select Watermark")
-                        files.firstOrNull()?.let { file ->
-                            scope.launch {
-                                val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(file) }
-                                watermarkBitmap = bitmap
-                                resultBitmap = null
-                                detectionState = DetectionState.Idle
-                                detectionResults = emptyList()
-                                detectionAlphaGuesses = emptyList()
-                                selectedDetectionIndices = emptySet()
-                                applyAllDetections = true
-                            }
-                        }
-                    },
-                    enabled = !isAutomationRunning,
-                    modifier = Modifier.weight(1f, fill = true)
+
+                Text("Controls", style = MaterialTheme.typography.headlineSmall)
+
+                // Image Selection
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Select Watermark")
-                }
-                OutlinedButton(
-                    onClick = {
-                        val files = openFileDialog("Select Images Bulk", multipleMode = true)
-                        if (files.isNotEmpty()) {
-                            scope.launch {
-                                val queueWasEmpty = bulkQueue.isEmpty()
-                                val startIndex = bulkQueue.size
-                                var added = 0
-                                files.forEachIndexed { _, file ->
-                                    bulkQueue.add(QueuedImage(file, file.name))
-                                    added++
+                    Button(
+                        onClick = {
+                            val files = openFileDialog("Select Base Image")
+                            files.firstOrNull()?.let { file ->
+                                bulkQueue.clear()
+                                currentQueueItemName = null
+                                scope.launch {
+                                    val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(file) }
+                                    updateBase(bitmap, file)
                                 }
-                                if (added > 0) {
-                                    lastToastMessage = "Added $added images to queue"
-                                    if (queueWasEmpty || baseBitmap == null) {
-                                        loadNextQueueImage()
+                            }
+                        },
+                        enabled = !isAutomationRunning,
+                        modifier = Modifier.weight(1f, fill = true)
+                    ) {
+                        Text("Select Image")
+                    }
+                    Button(
+                        onClick = {
+                            val files = openFileDialog("Select Watermark")
+                            files.firstOrNull()?.let { file ->
+                                scope.launch {
+                                    val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(file) }
+                                    watermarkBitmap = bitmap
+                                    resultBitmap = null
+                                    detectionState = DetectionState.Idle
+                                    detectionResults = emptyList()
+                                    detectionAlphaGuesses = emptyList()
+                                    selectedDetectionIndices = emptySet()
+                                    applyAllDetections = true
+                                }
+                            }
+                        },
+                        enabled = !isAutomationRunning,
+                        modifier = Modifier.weight(1f, fill = true)
+                    ) {
+                        Text("Select Watermark")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val files = openFileDialog("Select Images Bulk", multipleMode = true)
+                            if (files.isNotEmpty()) {
+                                scope.launch {
+                                    val queueWasEmpty = bulkQueue.isEmpty()
+                                    val startIndex = bulkQueue.size
+                                    var added = 0
+                                    files.forEachIndexed { _, file ->
+                                        bulkQueue.add(QueuedImage(file, file.name))
+                                        added++
+                                    }
+                                    if (added > 0) {
+                                        lastToastMessage = "Added $added images to queue"
+                                        if (queueWasEmpty || baseBitmap == null) {
+                                            loadNextQueueImage()
+                                        }
                                     }
                                 }
                             }
-                        }
-                    },
-                    enabled = !isAutomationRunning,
-                    modifier = Modifier.weight(1f, fill = true)
-                ) {
-                    Text("Select Images (Bulk)")
+                        },
+                        enabled = !isAutomationRunning,
+                        modifier = Modifier.weight(1f, fill = true)
+                    ) {
+                        Text("Bulk Select")
+                    }
                 }
-            }
 
-            if (baseBitmap != null || watermarkBitmap != null || bulkQueue.isNotEmpty()) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (baseBitmap != null || watermarkBitmap != null || bulkQueue.isNotEmpty()) {
                     TextButton(
                         onClick = {
                             clearQueue()
@@ -591,6 +637,7 @@ fun UnwatermarkerScreen() {
                             baseImageFile = null
                             watermarkBitmap = null
                             resultBitmap = null
+                            realTimePreviewBitmap = null
                             offsetX = 0f
                             offsetY = 0f
                             detectionState = DetectionState.Idle
@@ -599,142 +646,143 @@ fun UnwatermarkerScreen() {
                             applyAllDetections = true
                         }
                     ) {
-                        Text("Reset")
+                        Text("Reset All")
                     }
                 }
-            }
 
-            if (bulkQueue.isNotEmpty() || currentQueueItemName != null) {
-                BulkQueueCard(
-                    queueSize = bulkQueue.size,
-                    currentItemName = currentQueueItemName,
-                    isLoadingCurrent = isLoadingQueueItem,
-                    canMarkComplete =
-                        !isProcessing &&
-                            !isAutomationRunning &&
-                            !isLoadingQueueItem &&
-                            bulkQueue.isNotEmpty() &&
-                            resultBitmap != null,
-                    isAutomationRunning = isAutomationRunning,
-                    automationProgress = automationProgress,
-                    automationTotal = automationTotal,
-                    onMarkComplete = { advanceQueue() },
-                    onSkipCurrent = { advanceQueue() },
-                    onClearQueue = { clearQueue() },
-                    onAutomate = { startAutomation() }
-                )
-            }
-
-            PreviewCard(
-                baseBitmap = baseBitmap,
-                watermarkBitmap = watermarkBitmap,
-                offsetX = offsetX,
-                offsetY = offsetY,
-                detectionResults = detectionResults,
-                selectedDetectionIndices = selectedDetectionIndices,
-                onSetOffset = { x, y ->
-                    offsetX = x
-                    offsetY = y
-                    selectedDetectionIndices = emptySet()
-                }
-            )
-            WatermarkPreviewCard(watermarkBitmap)
-            SliderCard(
-                title = "Detection Threshold",
-                value = detectionThreshold,
-                onValueChange = { value ->
-                    val rounded = (value * 100).roundToInt() / 100f
-                    detectionThreshold = rounded.coerceIn(0f, 1f)
-                },
-                valueRange = 0f..1f,
-                valueFormatter = { value -> String.format("%.2f", value) }
-            )
-            DetectionCard(
-                detectionState = detectionState,
-                detectionResults = detectionResults,
-                selectedDetections = selectedDetectionIndices,
-                applyAllDetections = applyAllDetections,
-                onDetectionToggled = { index ->
-                    detectionResults.getOrNull(index)?.let { detection ->
-                        val next =
-                            selectedDetectionIndices.toMutableSet().apply {
-                                if (!add(index)) {
-                                    remove(index)
-                                }
-                            }
-                        if (index !in selectedDetectionIndices) {
-                            offsetX = detection.offsetX
-                            offsetY = detection.offsetY
-                        }
-                        selectedDetectionIndices = next
-                    }
-                },
-                onApplyAllDetectionsChanged = { checked -> applyAllDetections = checked }
-            )
-
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Auto Guess Alpha")
-                    Switch(
-                        checked = autoGuessAlpha,
-                        onCheckedChange = { isChecked -> autoGuessAlpha = isChecked }
+                if (bulkQueue.isNotEmpty() || currentQueueItemName != null) {
+                    BulkQueueCard(
+                        queueSize = bulkQueue.size,
+                        currentItemName = currentQueueItemName,
+                        isLoadingCurrent = isLoadingQueueItem,
+                        canMarkComplete =
+                            !isProcessing &&
+                                !isAutomationRunning &&
+                                !isLoadingQueueItem &&
+                                bulkQueue.isNotEmpty() &&
+                                (resultBitmap != null || realTimePreviewBitmap != null),
+                        isAutomationRunning = isAutomationRunning,
+                        automationProgress = automationProgress,
+                        automationTotal = automationTotal,
+                        onMarkComplete = { advanceQueue() },
+                        onSkipCurrent = { advanceQueue() },
+                        onClearQueue = { clearQueue() },
+                        onAutomate = { startAutomation() }
                     )
                 }
-            }
 
-            SliderCard(
-                title = "Offset X",
-                value = offsetX,
-                onValueChange = {
-                    offsetX = it
-                    selectedDetectionIndices = emptySet()
-                },
-                valueRange = -maxOffsetX..maxOffsetX,
-                valueFormatter = { value -> "${value.roundToInt()} px" },
-                allowManualInput = true
-            )
-            SliderCard(
-                title = "Offset Y",
-                value = offsetY,
-                onValueChange = {
-                    offsetY = it
-                    selectedDetectionIndices = emptySet()
-                },
-                valueRange = -maxOffsetY..maxOffsetY,
-                valueFormatter = { value -> "${value.roundToInt()} px" },
-                allowManualInput = true
-            )
-            SliderCard(
-                title = "Alpha Adjust",
-                value = alphaAdjust,
-                onValueChange = { alphaAdjust = it },
-                valueRange = 0.1f..2f,
-                steps = 37,
-                valueFormatter = { value -> String.format("%.2fx", value) },
-                enabled = !autoGuessAlpha
-            )
-            SliderCard(
-                title = "Transparency Threshold",
-                value = transparencyThreshold,
-                onValueChange = { transparencyThreshold = it },
-                valueRange = 0f..255f,
-                steps = 254,
-                valueFormatter = { value -> value.roundToInt().toString() }
-            )
-            SliderCard(
-                title = "Opaque Threshold",
-                value = opaqueThreshold,
-                onValueChange = { opaqueThreshold = it },
-                valueRange = 0f..255f,
-                steps = 254,
-                valueFormatter = { value -> value.roundToInt().toString() }
-            )
+                WatermarkPreviewCard(watermarkBitmap)
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                DetectionCard(
+                    detectionState = detectionState,
+                    detectionResults = detectionResults,
+                    selectedDetections = selectedDetectionIndices,
+                    applyAllDetections = applyAllDetections,
+                    onDetectionToggled = { index ->
+                        detectionResults.getOrNull(index)?.let { detection ->
+                            val next =
+                                selectedDetectionIndices.toMutableSet().apply {
+                                    if (!add(index)) {
+                                        remove(index)
+                                    }
+                                }
+                            if (index !in selectedDetectionIndices) {
+                                offsetX = detection.offsetX
+                                offsetY = detection.offsetY
+                            }
+                            selectedDetectionIndices = next
+                        }
+                    },
+                    onApplyAllDetectionsChanged = { checked -> applyAllDetections = checked }
+                )
+
+                SliderCard(
+                    title = "Detection Threshold",
+                    value = detectionThreshold,
+                    onValueChange = { value ->
+                        val rounded = (value * 100).roundToInt() / 100f
+                        detectionThreshold = rounded.coerceIn(0f, 1f)
+                    },
+                    valueRange = 0f..1f,
+                    valueFormatter = { value -> String.format("%.2f", value) }
+                )
+
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Real Time Unwatermarking")
+                            Switch(
+                                checked = isRealTimeUnwatermarking,
+                                onCheckedChange = { isRealTimeUnwatermarking = it }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Auto Guess Alpha")
+                            Switch(
+                                checked = autoGuessAlpha,
+                                onCheckedChange = { isChecked -> autoGuessAlpha = isChecked }
+                            )
+                        }
+                    }
+                }
+
+                SliderCard(
+                    title = "Offset X (Manual)",
+                    value = offsetX,
+                    onValueChange = {
+                        offsetX = it
+                        selectedDetectionIndices = emptySet()
+                    },
+                    valueRange = -maxOffsetX..maxOffsetX,
+                    valueFormatter = { value -> "${value.roundToInt()} px" },
+                    allowManualInput = true
+                )
+                SliderCard(
+                    title = "Offset Y (Manual)",
+                    value = offsetY,
+                    onValueChange = {
+                        offsetY = it
+                        selectedDetectionIndices = emptySet()
+                    },
+                    valueRange = -maxOffsetY..maxOffsetY,
+                    valueFormatter = { value -> "${value.roundToInt()} px" },
+                    allowManualInput = true
+                )
+                SliderCard(
+                    title = "Alpha Adjust",
+                    value = alphaAdjust,
+                    onValueChange = { alphaAdjust = it },
+                    valueRange = 0.1f..2f,
+                    steps = 37,
+                    valueFormatter = { value -> String.format("%.2fx", value) },
+                    enabled = !autoGuessAlpha
+                )
+                SliderCard(
+                    title = "Transparency Threshold",
+                    value = transparencyThreshold,
+                    onValueChange = { transparencyThreshold = it },
+                    valueRange = 0f..255f,
+                    steps = 254,
+                    valueFormatter = { value -> value.roundToInt().toString() }
+                )
+                SliderCard(
+                    title = "Opaque Threshold",
+                    value = opaqueThreshold,
+                    onValueChange = { opaqueThreshold = it },
+                    valueRange = 0f..255f,
+                    steps = 254,
+                    valueFormatter = { value -> value.roundToInt().toString() }
+                )
+
                 Button(
                     enabled = !isProcessing && baseBitmap != null && watermarkBitmap != null,
                     onClick = {
@@ -821,37 +869,179 @@ fun UnwatermarkerScreen() {
                             resultBitmap = result
                             isProcessing = false
                         }
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text =
-                            if (isProcessing) {
-                                "Processing..."
-                            } else {
-                                "Process Image"
+                    Text(if (isProcessing) "Processing..." else "Process Image")
+                }
+
+                if (resultBitmap != null) {
+                     ResultCard(
+                        resultBitmap = resultBitmap,
+                        onSaveResult = { bitmap ->
+                            val files = openFileDialog("Save Result", mode = FileDialog.SAVE)
+                            files.firstOrNull()?.let { file ->
+                                scope.launch {
+                                    val saved =
+                                        withContext(Dispatchers.IO) {
+                                            saveBitmapToFile(bitmap, file.parentFile, file.name)
+                                        }
+                                    lastToastMessage = if (saved) "Saved to ${file.name}" else "Save failed"
+                                    if (saved && bulkQueue.isNotEmpty() && !isAutomationRunning) {
+                                        advanceQueue()
+                                    }
+                                }
                             }
+                        }
                     )
                 }
             }
 
-            ResultCard(
-                resultBitmap = resultBitmap,
-                onSaveResult = { bitmap ->
-                    val files = openFileDialog("Save Result", mode = FileDialog.SAVE)
-                    files.firstOrNull()?.let { file ->
-                        scope.launch {
-                            val saved =
-                                withContext(Dispatchers.IO) {
-                                    saveBitmapToFile(bitmap, file.parentFile, file.name)
-                                }
-                            lastToastMessage = if (saved) "Saved to ${file.name}" else "Save failed"
-                            if (saved && bulkQueue.isNotEmpty() && !isAutomationRunning) {
-                                advanceQueue()
-                            }
+            // WORKSPACE (Right side)
+            Box(
+                modifier = Modifier
+                    .weight(0.7f)
+                    .fillMaxHeight()
+                    .background(Color.DarkGray)
+            ) {
+                if (baseBitmap != null) {
+                    val base = baseBitmap!!
+                    val density = LocalDensity.current
+
+                    BoxWithConstraints(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val containerWidth = maxWidth.value
+                        val containerHeight = maxHeight.value
+
+                        // Calculate scale to fit
+                        val scale = min(containerWidth / base.width, containerHeight / base.height)
+                        val displayWidth = base.width * scale
+                        val displayHeight = base.height * scale
+
+                        val imageBitmap = remember(base) { base.toComposeImageBitmap() }
+
+                        // Draw Base Image
+                        Image(
+                            bitmap = imageBitmap,
+                            contentDescription = "Workspace",
+                            modifier = Modifier.size(displayWidth.dp, displayHeight.dp),
+                            contentScale = ContentScale.FillBounds
+                        )
+
+                        // If Real Time is active and we have a preview, show it ON TOP
+                        // Actually, if Real Time is active, we should just show the resultBitmap if available (which is realTimePreviewBitmap)
+                        // But realTimePreviewBitmap is updated async.
+
+                        if (isRealTimeUnwatermarking && realTimePreviewBitmap != null) {
+                             Image(
+                                bitmap = realTimePreviewBitmap!!.toComposeImageBitmap(),
+                                contentDescription = "Preview",
+                                modifier = Modifier.size(displayWidth.dp, displayHeight.dp),
+                                contentScale = ContentScale.FillBounds
+                             )
+                        } else if (watermarkBitmap != null) {
+                             // Show Draggable Watermark Overlay
+                             val wm = watermarkBitmap!!
+                             val wmWidth = (wm.width * scale).dp
+                             val wmHeight = (wm.height * scale).dp
+
+                             // Offset is in image pixels. Convert to dp relative to display
+                             val xOffsetDp = (offsetX * scale).dp
+                             val yOffsetDp = (offsetY * scale).dp
+
+                             Box(
+                                 modifier = Modifier
+                                    .offset(xOffsetDp, yOffsetDp)
+                                    .size(wmWidth, wmHeight)
+                                    .pointerInput(base, wm, scale) {
+                                        detectDragGestures { _, dragAmount ->
+                                            // dragAmount is in pixels (screen pixels)
+                                            // We need to convert screen pixels to image pixels
+                                            // 1 dp = density pixels
+                                            // scale maps 1 image pixel to 'scale' dp.
+                                            // So 1 image pixel = 'scale * density' screen pixels?
+                                            // Wait, maxWidth.value is in dp.
+                                            // 'scale' is dp / image_pixel.
+                                            // Compose 'dragAmount' is in raw pixels (screen px).
+                                            // We need to convert raw px to dp, then to image px.
+                                            // Or:
+                                            // displayWidth (dp) corresponds to base.width (px).
+                                            // displayWidthPx = displayWidth * density.
+                                            // ratio = base.width / displayWidthPx.
+
+                                            val displayWidthPx = displayWidth * density.density
+                                            val ratio = base.width.toFloat() / displayWidthPx
+
+                                            val dx = dragAmount.x * ratio
+                                            val dy = dragAmount.y * ratio
+
+                                            offsetX += dx
+                                            offsetY += dy
+
+                                            // Clear auto-selection when manually dragging
+                                            selectedDetectionIndices = emptySet()
+                                        }
+                                    }
+                             ) {
+                                 // Draw watermark
+                                 Image(
+                                     bitmap = wm.toComposeImageBitmap(),
+                                     contentDescription = "Watermark",
+                                     modifier = Modifier.fillMaxSize().alpha(0.7f),
+                                     contentScale = ContentScale.FillBounds
+                                 )
+                                 // Draw bounding box
+                                 Canvas(modifier = Modifier.fillMaxSize()) {
+                                     drawRect(color = Color.Green, style = Stroke(width = 2f))
+                                 }
+                             }
+                        } else if (isRealTimeUnwatermarking && watermarkBitmap != null) {
+                             // Case where RealTime is ON, but we still need the interactive overlay
+                             // We show the overlay with very low alpha so bounding box and drag still work
+                             val wm = watermarkBitmap!!
+                             val wmWidth = (wm.width * scale).dp
+                             val wmHeight = (wm.height * scale).dp
+
+                             val xOffsetDp = (offsetX * scale).dp
+                             val yOffsetDp = (offsetY * scale).dp
+
+                             Box(
+                                 modifier = Modifier
+                                    .offset(xOffsetDp, yOffsetDp)
+                                    .size(wmWidth, wmHeight)
+                                    .pointerInput(base, wm, scale) {
+                                        detectDragGestures { _, dragAmount ->
+                                            val displayWidthPx = displayWidth * density.density
+                                            val ratio = base.width.toFloat() / displayWidthPx
+
+                                            val dx = dragAmount.x * ratio
+                                            val dy = dragAmount.y * ratio
+
+                                            offsetX += dx
+                                            offsetY += dy
+
+                                            selectedDetectionIndices = emptySet()
+                                        }
+                                    }
+                             ) {
+                                 // Draw bounding box only, or very faint watermark
+                                 // Draw bounding box
+                                 Canvas(modifier = Modifier.fillMaxSize()) {
+                                     drawRect(color = Color.Green.copy(alpha=0.5f), style = Stroke(width = 2f))
+                                 }
+                             }
                         }
                     }
+                } else {
+                    Text(
+                        "Load an image to start",
+                        color = Color.LightGray,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
                 }
-            )
+            }
         }
     }
 }
@@ -991,9 +1181,9 @@ fun ExtractorScreen() {
                      BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(400.dp)) {
                          val density = LocalDensity.current
                          val base = baseBitmap!!
-                         val imageBitmap = remember(base) { base.toImageBitmap() }
+                         val imageBitmap = remember(base) { base.toComposeImageBitmap() }
                          val overlay = overlayBitmap
-                         val overlayImage = remember(overlay) { overlay?.toImageBitmap() }
+                         val overlayImage = remember(overlay) { overlay?.toComposeImageBitmap() }
 
                          // Scale logic for preview
                          val scale = min(maxWidth.value / base.width, maxHeight.value / base.height)
@@ -1024,12 +1214,7 @@ fun ExtractorScreen() {
                                              detectDragGestures { _, dragAmount ->
                                                  // Adjust drag amount back to original image coordinates
                                                  // This is a rough approximation because scale is in dp/px
-                                                 // Actually simpler:
-                                                 // dragAmount is in px. We need to convert it to image pixels.
-                                                 // 1 dp = density pixels.
-                                                 // But here we scaled the image to fit in dp size.
-                                                 // So ratio is base.width / displayWidth.
-                                                 val ratio = base.width.toFloat() / displayWidth
+                                                 val ratio = base.width.toFloat() / (displayWidth * density.density)
                                                  overlayOffsetX += dragAmount.x * ratio
                                                  overlayOffsetY += dragAmount.y * ratio
                                                  clampOverlayOffset(base, overlay)
@@ -1197,51 +1382,13 @@ private fun BulkQueueCard(
 }
 
 @Composable
-private fun PreviewCard(
-    baseBitmap: BufferedImage?,
-    watermarkBitmap: BufferedImage?,
-    offsetX: Float,
-    offsetY: Float,
-    detectionResults: List<WatermarkDetection>,
-    selectedDetectionIndices: Set<Int>,
-    onSetOffset: (Float, Float) -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text("Preview", style = MaterialTheme.typography.titleMedium)
-
-            if (baseBitmap == null) {
-                Text("No base image loaded")
-            } else {
-                val density = LocalDensity.current
-                var previewScale by remember { mutableStateOf(1f) }
-                var previewTranslation by remember { mutableStateOf(Offset.Zero) }
-
-                BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(300.dp)) {
-                    val imageBitmap = remember(baseBitmap) { baseBitmap.toImageBitmap() }
-                    Image(
-                        bitmap = imageBitmap,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun WatermarkPreviewCard(watermarkBitmap: BufferedImage?) {
-    Card(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+    Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Watermark Preview", style = MaterialTheme.typography.titleMedium)
             if (watermarkBitmap != null) {
                 Image(
-                    bitmap = watermarkBitmap.toImageBitmap(),
+                    bitmap = watermarkBitmap.toComposeImageBitmap(),
                     contentDescription = null,
                     modifier = Modifier.height(100.dp),
                     contentScale = ContentScale.Fit
@@ -1292,6 +1439,34 @@ private fun DetectionCard(
             Text("Detection", style = MaterialTheme.typography.titleMedium)
             // Implementation similar to original
             Text(detectionState.toString())
+            if (detectionResults.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Detections: ${detectionResults.size}")
+                detectionResults.forEachIndexed { index, detection ->
+                    val isSelected = index in selectedDetections
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { onDetectionToggled(index) }
+                    ) {
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = { onDetectionToggled(index) }
+                        )
+                        Column {
+                             Text("Score: ${"%.4f".format(detection.score)}")
+                             Text("Offset: (${detection.offsetX.toInt()}, ${detection.offsetY.toInt()})", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = applyAllDetections,
+                        onCheckedChange = onApplyAllDetectionsChanged
+                    )
+                    Text("Apply all detections")
+                }
+            }
         }
     }
 }
@@ -1303,7 +1478,7 @@ private fun ResultCard(resultBitmap: BufferedImage?, onSaveResult: (BufferedImag
             Text("Result", style = MaterialTheme.typography.titleMedium)
             if (resultBitmap != null) {
                 Image(
-                    bitmap = resultBitmap.toImageBitmap(),
+                    bitmap = resultBitmap.toComposeImageBitmap(),
                     contentDescription = null,
                     modifier = Modifier.height(200.dp).fillMaxWidth(),
                     contentScale = ContentScale.Fit
