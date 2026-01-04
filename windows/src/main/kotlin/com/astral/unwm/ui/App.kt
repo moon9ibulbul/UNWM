@@ -249,7 +249,17 @@ fun UnwatermarkerScreen() {
         val index = watermarkInstances.indexOfFirst { it.id == id }
         if (index != -1) {
             val current = watermarkInstances[index]
-            watermarkInstances[index] = current.copy(x = current.x + dx, y = current.y + dy)
+            val base = baseBitmap
+            val wm = watermarkBitmap
+            if (base != null && wm != null) {
+                val maxX = (base.width - wm.width).toFloat().coerceAtLeast(0f)
+                val maxY = (base.height - wm.height).toFloat().coerceAtLeast(0f)
+                val newX = (current.x + dx).coerceIn(0f, maxX)
+                val newY = (current.y + dy).coerceIn(0f, maxY)
+                watermarkInstances[index] = current.copy(x = newX, y = newY)
+            } else {
+                watermarkInstances[index] = current.copy(x = current.x + dx, y = current.y + dy)
+            }
         }
     }
 
@@ -613,20 +623,21 @@ fun UnwatermarkerScreen() {
                 ) {
                     Button(
                         onClick = {
-                            val files = openFileDialog("Select Base Image")
-                            files.firstOrNull()?.let { file ->
-                                bulkQueue.clear()
-                                currentQueueItemName = null
+                            val files = openFileDialog("Select Images", multipleMode = true)
+                            if (files.isNotEmpty()) {
                                 scope.launch {
-                                    val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(file) }
-                                    updateBase(bitmap, file)
+                                    bulkQueue.clear()
+                                    files.forEach { file ->
+                                        bulkQueue.add(QueuedImage(file, file.name))
+                                    }
+                                    loadNextQueueImage()
                                 }
                             }
                         },
                         enabled = !isAutomationRunning,
                         modifier = Modifier.weight(1f, fill = true)
                     ) {
-                        Text("Select Image")
+                        Text("Select Image(s)")
                     }
                     Button(
                         onClick = {
@@ -648,32 +659,6 @@ fun UnwatermarkerScreen() {
                         modifier = Modifier.weight(1f, fill = true)
                     ) {
                         Text("Select Watermark")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            val files = openFileDialog("Select Images Bulk", multipleMode = true)
-                            if (files.isNotEmpty()) {
-                                scope.launch {
-                                    val queueWasEmpty = bulkQueue.isEmpty()
-                                    val startIndex = bulkQueue.size
-                                    var added = 0
-                                    files.forEachIndexed { _, file ->
-                                        bulkQueue.add(QueuedImage(file, file.name))
-                                        added++
-                                    }
-                                    if (added > 0) {
-                                        lastToastMessage = "Added $added images to queue"
-                                        if (queueWasEmpty || baseBitmap == null) {
-                                            loadNextQueueImage()
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        enabled = !isAutomationRunning,
-                        modifier = Modifier.weight(1f, fill = true)
-                    ) {
-                        Text("Bulk Select")
                     }
                 }
 
@@ -945,144 +930,101 @@ fun UnwatermarkerScreen() {
                             imageBitmap
                         }
 
-                        Image(
-                            bitmap = displayBitmap,
-                            contentDescription = "Workspace",
-                            modifier = Modifier.size(displayWidth.dp, displayHeight.dp),
-                            contentScale = ContentScale.FillBounds
-                        )
+                        // Container for Image + Overlays
+                        Box(
+                            modifier = Modifier.size(displayWidth.dp, displayHeight.dp)
+                        ) {
+                             Image(
+                                bitmap = displayBitmap,
+                                contentDescription = "Workspace",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.FillBounds
+                            )
 
-                        // Render Overlays
-                        if (watermarkBitmap != null && (!isRealTimeUnwatermarking || true)) {
-                             // Even in RealTime mode, we need to show selection boxes to allow moving
-                             val wm = watermarkBitmap!!
-                             val wmWidth = (wm.width * fitScale).dp
-                             val wmHeight = (wm.height * fitScale).dp
+                            // Render Overlays
+                            if (watermarkBitmap != null && (!isRealTimeUnwatermarking || true)) {
+                                 val wm = watermarkBitmap!!
+                                 val wmWidth = (wm.width * fitScale).dp
+                                 val wmHeight = (wm.height * fitScale).dp
 
-                             watermarkInstances.forEach { instance ->
-                                 val xOffsetDp = (instance.x * fitScale).dp
-                                 val yOffsetDp = (instance.y * fitScale).dp
+                                 watermarkInstances.forEach { instance ->
+                                     val xOffsetDp = (instance.x * fitScale).dp
+                                     val yOffsetDp = (instance.y * fitScale).dp
 
-                                 // Context Menu Logic
-                                 var showContextMenu by remember { mutableStateOf(false) }
+                                     var showContextMenu by remember { mutableStateOf(false) }
 
-                                 Box(
-                                     modifier = Modifier
-                                        .offset(xOffsetDp, yOffsetDp)
-                                        .size(wmWidth, wmHeight)
-                                        .pointerInput(base, wm, fitScale, instance.id) {
-                                            detectDragGestures(
-                                                onDragStart = { selectedInstanceId = instance.id },
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    // FIX: Correct Coordinate Mapping
-                                                    // dragAmount is screen pixels (affected by zoom and fitScale)
-                                                    // We need to apply delta to the underlying image coordinates
-                                                    // The hierarchy is: Screen -> Zoom/Pan -> ImageFit -> ImagePixels
-                                                    // However, the gesture detector is ON the transformed box? No, it's on the child box which IS transformed.
-                                                    // Wait, if the parent Box is scaled by zoomScale, then the child's local coordinates are already zoomed?
-                                                    // NO. The graphicsLayer is applied to the parent of this Box.
-                                                    // So 'dragAmount' is in the LOCAL coordinates of the scaled layer.
-                                                    // So it is already 'zoomed' pixels?
-                                                    // Let's analyze:
-                                                    // If I zoom in 2x, the box is 2x bigger visually.
-                                                    // If I move my mouse 100px on screen, the drag detector reports 100px (roughly).
-                                                    // But because the whole layer is scaled 2x, a 100px visual move is 50px in local coordinates?
-                                                    // Compose gesture detection behavior inside graphicsLayer is tricky.
-                                                    // Usually, detectDragGestures returns delta in the local coordinate system of the node.
-                                                    // If the node is scaled, the delta might be unscaled.
-                                                    // Actually, usually simpler:
-                                                    // We map: Image Pixel * fitScale = Display DP.
-                                                    // Display DP * density = Display Pixel.
-                                                    // So 1 Image Pixel = fitScale * density Screen Pixels.
-                                                    // We ignore zoomScale here if the drag detector is *inside* the zoomed container,
-                                                    // because the coordinate system of the container scales with it.
-                                                    // BUT `detectTransformGestures` (zoom) is on the PARENT Box.
-                                                    // `graphicsLayer` is on the BoxWithConstraints.
-                                                    // The Overlays are children of BoxWithConstraints.
-                                                    // So when we drag an overlay, we are operating in the scaled coordinate system?
-                                                    // No, graphicsLayer applies a visual transformation, usually not affecting layout coordinates for children unless implementation varies.
-                                                    // However, for manual offset correction:
-                                                    // We want to update `instance.x` (Image Pixels).
-                                                    // deltaX (Image Pixels) = dragAmount.x / (fitScale * density).
-                                                    // If zoom is handled via graphicsLayer, visual scale matches.
-
-                                                    val displayWidthPx = displayWidth * density.density
-                                                    val ratio = base.width.toFloat() / displayWidthPx
-
-                                                    // We also need to divide by zoomScale if the drag events are reported in "screen" coordinates
-                                                    // but we are visually zoomed.
-                                                    // PointerInput inside a graphicsLayer usually receives coordinates relative to that layer?
-                                                    // Let's assume standard behavior:
-                                                    // deltaImage = (dragAmount / density) / fitScale.
-                                                    // With Zoom: if we are zoomed 2x, a 10px drag on screen is 5px in the original box.
-                                                    // So we divide by zoomScale?
-                                                    // Actually, simpler test: `ratio` converts (DisplayPx -> ImagePx).
-                                                    // We just need to handle the zoom factor.
-
-                                                    // If events are unscaled by graphicsLayer:
-                                                    val effectiveRatio = ratio // / zoomScale ??
-
-                                                    // To be safe against "Coordinate Mapping" bug:
-                                                    // We divide by zoomScale because visual movement is magnified.
-                                                    // Wait, if I drag 100px on screen, and zoom is 2x, I moved 50px relative to the image.
-                                                    // So yes, divide by zoomScale.
-
-                                                    updateSelectedInstancePosition(
-                                                        dragAmount.x * ratio / zoomScale,
-                                                        dragAmount.y * ratio / zoomScale
-                                                    )
-                                                }
-                                            )
-                                        }
-                                        .onPointerEvent(PointerEventType.Press) {
-                                            selectedInstanceId = instance.id
-                                            // Handle right click
-                                            // PointerButtons.isSecondaryPressed check
-                                            // In Compose Desktop 1.6+, it is part of PointerEvent.buttons
-                                            if (it.buttons.isSecondaryPressed) {
-                                                showContextMenu = true
+                                     Box(
+                                         modifier = Modifier
+                                            .offset(xOffsetDp, yOffsetDp)
+                                            .size(wmWidth, wmHeight)
+                                            .pointerInput(base, wm, fitScale, instance.id) {
+                                                detectDragGestures(
+                                                    onDragStart = { selectedInstanceId = instance.id },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        val displayWidthPx = displayWidth * density.density
+                                                        val ratio = base.width.toFloat() / displayWidthPx
+                                                        updateSelectedInstancePosition(
+                                                            dragAmount.x * ratio / zoomScale,
+                                                            dragAmount.y * ratio / zoomScale
+                                                        )
+                                                    }
+                                                )
                                             }
-                                        }
-                                 ) {
-                                     val isSelected = instance.id == selectedInstanceId
-                                     // Draw watermark image (only if not in real-time mode, OR if we want to show it semi-transparently)
-                                     if (!isRealTimeUnwatermarking) {
-                                         Image(
-                                             bitmap = wm.toComposeImageBitmap(),
-                                             contentDescription = "Watermark",
-                                             modifier = Modifier.fillMaxSize().alpha(0.7f),
-                                             contentScale = ContentScale.FillBounds
-                                         )
-                                     }
-
-                                     // Draw bounding box
-                                     Canvas(modifier = Modifier.fillMaxSize()) {
-                                         val strokeColor = if (isSelected) Color.Green else Color.Green.copy(alpha=0.5f)
-                                         drawRect(color = strokeColor, style = Stroke(width = if (isSelected) 3f else 1f))
-                                     }
-
-                                     // Context Menu
-                                     DropdownMenu(
-                                         expanded = showContextMenu,
-                                         onDismissRequest = { showContextMenu = false }
+                                            .onPointerEvent(PointerEventType.Press) {
+                                                selectedInstanceId = instance.id
+                                                if (it.buttons.isSecondaryPressed) {
+                                                    showContextMenu = true
+                                                }
+                                            }
                                      ) {
-                                         DropdownMenuItem(
-                                             text = { Text("Duplicate") },
-                                             onClick = {
-                                                 val newInstance = instance.copy(
-                                                     id = UUID.randomUUID().toString(),
-                                                     x = instance.x + 20,
-                                                     y = instance.y + 20
-                                                 )
-                                                 watermarkInstances.add(newInstance)
-                                                 selectedInstanceId = newInstance.id
-                                                 showContextMenu = false
-                                             }
-                                         )
+                                         val isSelected = instance.id == selectedInstanceId
+
+                                         if (!isRealTimeUnwatermarking) {
+                                             Image(
+                                                 bitmap = wm.toComposeImageBitmap(),
+                                                 contentDescription = "Watermark",
+                                                 modifier = Modifier.fillMaxSize().alpha(0.7f),
+                                                 contentScale = ContentScale.FillBounds
+                                             )
+                                         }
+
+                                         Canvas(modifier = Modifier.fillMaxSize()) {
+                                             val strokeColor = if (isSelected) Color.Green else Color.Green.copy(alpha=0.5f)
+                                             drawRect(color = strokeColor, style = Stroke(width = if (isSelected) 3f else 1f))
+                                         }
+
+                                         DropdownMenu(
+                                             expanded = showContextMenu,
+                                             onDismissRequest = { showContextMenu = false }
+                                         ) {
+                                             DropdownMenuItem(
+                                                 text = { Text("Duplicate") },
+                                                 onClick = {
+                                                     val newInstance = instance.copy(
+                                                         id = UUID.randomUUID().toString(),
+                                                         x = instance.x + 20,
+                                                         y = instance.y + 20
+                                                     )
+                                                     watermarkInstances.add(newInstance)
+                                                     selectedInstanceId = newInstance.id
+                                                     showContextMenu = false
+                                                 }
+                                             )
+                                             DropdownMenuItem(
+                                                 text = { Text("Delete") },
+                                                 onClick = {
+                                                     watermarkInstances.remove(instance)
+                                                     if (selectedInstanceId == instance.id) {
+                                                         selectedInstanceId = null
+                                                     }
+                                                     showContextMenu = false
+                                                 }
+                                             )
+                                         }
                                      }
                                  }
-                             }
+                            }
                         }
                     }
                 } else {
@@ -1091,6 +1033,30 @@ fun UnwatermarkerScreen() {
                         color = Color.LightGray,
                         modifier = Modifier.align(Alignment.Center)
                     )
+                }
+
+                // Zoom Controls
+                if (baseBitmap != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(16.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                             IconButton(onClick = { zoomScale = (zoomScale - 0.1f).coerceAtLeast(0.1f) }) {
+                                 Text("-", color = Color.White)
+                             }
+                             Text(
+                                 "${(zoomScale * 100).roundToInt()}%",
+                                 color = Color.White,
+                                 modifier = Modifier.padding(horizontal = 8.dp)
+                             )
+                             IconButton(onClick = { zoomScale += 0.1f }) {
+                                 Text("+", color = Color.White)
+                             }
+                        }
+                    }
                 }
             }
         }
