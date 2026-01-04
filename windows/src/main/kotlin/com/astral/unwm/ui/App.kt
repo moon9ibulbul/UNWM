@@ -133,10 +133,6 @@ fun UnwatermarkerScreen() {
 
     // Multi-instance state
     var watermarkInstances = remember { mutableStateListOf<WatermarkInstance>() }
-    // We keep 'offsetX/Y' as a concept for the FIRST instance for backward compat in logic if needed,
-    // but primarily we drive from the list.
-    // However, to simplify refactoring, let's just use the list.
-    // But wait, the Sidebar controls need to bind to specific instances.
 
     var selectedInstanceId by remember { mutableStateOf<String?>(null) }
 
@@ -158,9 +154,12 @@ fun UnwatermarkerScreen() {
     var detectionAlphaGuesses by remember { mutableStateOf<List<Float?>>(emptyList()) }
     var applyAllDetections by remember { mutableStateOf(true) }
 
+    // Queue State
     val bulkQueue = remember { mutableStateListOf<QueuedImage>() }
+    var currentQueueIndex by remember { mutableStateOf(0) }
     var currentQueueItemName by remember { mutableStateOf<String?>(null) }
     var isLoadingQueueItem by remember { mutableStateOf(false) }
+
     var isAutomationRunning by remember { mutableStateOf(false) }
     var automationProgress by remember { mutableStateOf(0) }
     var automationTotal by remember { mutableStateOf(0) }
@@ -226,7 +225,7 @@ fun UnwatermarkerScreen() {
     fun updateBase(
         bitmap: BufferedImage?,
         file: File?,
-        queueLabel: String? = if (bulkQueue.isNotEmpty()) file?.name else null
+        queueLabel: String? = if (bulkQueue.isNotEmpty() && currentQueueIndex in bulkQueue.indices) bulkQueue[currentQueueIndex].displayName else null
     ) {
         baseBitmap = bitmap
         baseImageFile = file
@@ -263,35 +262,37 @@ fun UnwatermarkerScreen() {
         }
     }
 
-    fun loadNextQueueImage() {
-        val next = bulkQueue.firstOrNull()
-        if (next == null) {
+    fun loadCurrentQueueImage() {
+        if (bulkQueue.isEmpty() || currentQueueIndex !in bulkQueue.indices) {
             isLoadingQueueItem = false
             updateBase(null, null)
             return
         }
+        val item = bulkQueue[currentQueueIndex]
         isLoadingQueueItem = true
         scope.launch {
-            val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(next.file) }
+            val bitmap = withContext(Dispatchers.IO) { loadImageFromFile(item.file) }
             if (bitmap != null) {
-                updateBase(bitmap, next.file, next.displayName)
-                isLoadingQueueItem = false
+                updateBase(bitmap, item.file, item.displayName)
             } else {
-                isLoadingQueueItem = false
-                if (bulkQueue.isNotEmpty()) bulkQueue.removeAt(0)
-                lastToastMessage = "Failed to load ${next.displayName}"
-                loadNextQueueImage()
+                lastToastMessage = "Failed to load ${item.displayName}"
             }
+            isLoadingQueueItem = false
         }
     }
 
-    fun advanceQueue() {
-        if (bulkQueue.isEmpty()) {
-            updateBase(null, null)
-            return
+    fun goToNextImage() {
+        if (currentQueueIndex < bulkQueue.size - 1) {
+            currentQueueIndex++
+            loadCurrentQueueImage()
         }
-        bulkQueue.removeAt(0)
-        loadNextQueueImage()
+    }
+
+    fun goToPrevImage() {
+        if (currentQueueIndex > 0) {
+            currentQueueIndex--
+            loadCurrentQueueImage()
+        }
     }
 
     suspend fun detectWatermarkCandidates(
@@ -352,6 +353,7 @@ fun UnwatermarkerScreen() {
     fun clearQueue() {
         if (bulkQueue.isEmpty()) return
         bulkQueue.clear()
+        currentQueueIndex = 0
         updateBase(null, null)
     }
 
@@ -374,6 +376,7 @@ fun UnwatermarkerScreen() {
         automationProgress = 0
         automationTotal = bulkQueue.size
         resultBitmap = null
+
         scope.launch {
             fun saveFailedAutomationResult(bitmap: BufferedImage, file: File) {
                 // Save with -failed suffix
@@ -383,20 +386,35 @@ fun UnwatermarkerScreen() {
                     file.nameWithoutExtension + "-failed." + file.extension
                 )
             }
-            val queueSnapshot = bulkQueue.toList()
+
             var savedCount = 0
             var processedCount = 0
             try {
-                for (item in queueSnapshot) {
+                // Iterate through the entire queue
+                for (i in bulkQueue.indices) {
+                    val item = bulkQueue[i]
+                    currentQueueIndex = i // Update UI index
+
                     val base = withContext(Dispatchers.IO) { loadImageFromFile(item.file) }
+
+                    // Update UI to show what's processing
+                    if (base != null) {
+                         updateBase(base, item.file, item.displayName)
+                         // Small delay to ensure UI updates are perceived if processing is super fast
+                         delay(50)
+                    }
+
                     processedCount++
                     automationProgress = processedCount
+
                     if (base == null) {
                         continue
                     }
+
                     val threshold = detectionThreshold
                     val transparencyClampInt = transparencyThreshold.roundToInt()
                     val opaqueClampInt = opaqueThreshold.roundToInt()
+
                     val processingResult =
                         withTimeoutOrNull(AUTOMATION_ITEM_TIMEOUT_MS) {
                             val detectionOutcome =
@@ -506,7 +524,7 @@ fun UnwatermarkerScreen() {
                         }
                     }
                 }
-                lastToastMessage = "Automation done. Saved $savedCount / ${queueSnapshot.size}"
+                lastToastMessage = "Automation done. Saved $savedCount / ${bulkQueue.size}"
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 lastToastMessage = "Automation failed: ${e.message}"
@@ -514,6 +532,14 @@ fun UnwatermarkerScreen() {
                 isAutomationRunning = false
                 automationProgress = 0
                 automationTotal = 0
+                // We do NOT clear the queue automatically anymore, to allow review
+                // Or maybe we should? The prompt didn't say.
+                // But previous behavior cleared it. Let's keep it cleared for now to match old behavior logic,
+                // or just reset to start.
+                // Reverting to clearing logic as per old code is safer unless requested otherwise.
+                // However, the prompt asked for "switching between images", so maybe keeping them is better.
+                // But after automation, usually you are done.
+                // Let's clear to indicate completion, or at least reset index.
                 bulkQueue.clear()
                 updateBase(null, null)
                 isLoadingQueueItem = false
@@ -630,7 +656,8 @@ fun UnwatermarkerScreen() {
                                     files.forEach { file ->
                                         bulkQueue.add(QueuedImage(file, file.name))
                                     }
-                                    loadNextQueueImage()
+                                    currentQueueIndex = 0
+                                    loadCurrentQueueImage()
                                 }
                             }
                         },
@@ -680,20 +707,20 @@ fun UnwatermarkerScreen() {
                     }
                 }
 
-                // Bulk Queue Card (Same logic, slightly adapted if needed)
+                // Bulk Queue Card
                 if (bulkQueue.isNotEmpty() || currentQueueItemName != null) {
                     BulkQueueCard(
                         queueSize = bulkQueue.size,
+                        currentItemIndex = currentQueueIndex,
                         currentItemName = currentQueueItemName,
                         isLoadingCurrent = isLoadingQueueItem,
-                        canMarkComplete = !isProcessing && !isAutomationRunning && !isLoadingQueueItem && bulkQueue.isNotEmpty(),
                         isAutomationRunning = isAutomationRunning,
                         automationProgress = automationProgress,
                         automationTotal = automationTotal,
-                        onMarkComplete = { advanceQueue() },
-                        onSkipCurrent = { advanceQueue() },
+                        onPrev = { goToPrevImage() },
+                        onNext = { goToNextImage() },
                         onClearQueue = { clearQueue() },
-                        onAutomate = { /* Not fully implemented in this refactor */ }
+                        onAutomate = { startAutomation() }
                     )
                 }
 
@@ -1149,7 +1176,7 @@ fun ExtractorScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Extractor Screen Implementation (Unchanged mostly)
+        // Extractor Screen Implementation
         if (lastToastMessage != null) {
              Text(
                 text = lastToastMessage!!,
@@ -1157,9 +1184,6 @@ fun ExtractorScreen() {
                 modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant).padding(8.dp)
             )
         }
-        // ... (Remaining Extractor UI logic omitted for brevity as it was not requested to be changed,
-        // but since I am overwriting the file, I MUST include it to avoid deleting it.
-        // I will copy the previous implementation of ExtractorScreen from memory/context.)
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -1317,19 +1341,18 @@ fun ExtractorScreen() {
     }
 }
 
-// ... BulkQueueCard, PreviewCard, etc. helpers remain the same ...
 
 @Composable
 private fun BulkQueueCard(
     queueSize: Int,
+    currentItemIndex: Int,
     currentItemName: String?,
     isLoadingCurrent: Boolean,
-    canMarkComplete: Boolean,
     isAutomationRunning: Boolean,
     automationProgress: Int,
     automationTotal: Int,
-    onMarkComplete: () -> Unit,
-    onSkipCurrent: () -> Unit,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
     onClearQueue: () -> Unit,
     onAutomate: () -> Unit
 ) {
@@ -1343,28 +1366,28 @@ private fun BulkQueueCard(
             if (isLoadingCurrent) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp))
-                    Text("Loading current item...", modifier = Modifier.padding(start = 8.dp))
+                    Text("Loading item...", modifier = Modifier.padding(start = 8.dp))
                 }
             } else if (!currentItemName.isNullOrBlank()) {
-                Text("Current: $currentItemName")
+                Text("Current: ${currentItemIndex + 1} / $queueSize - $currentItemName")
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = onMarkComplete,
-                    enabled = canMarkComplete,
+                    onClick = onPrev,
+                    enabled = !isAutomationRunning && currentItemIndex > 0 && !isLoadingCurrent,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Mark Complete")
+                    Text("< Prev")
                 }
-                OutlinedButton(
-                    onClick = onSkipCurrent,
-                    enabled = !isAutomationRunning && queueSize > 0 && !isLoadingCurrent,
+                Button(
+                    onClick = onNext,
+                    enabled = !isAutomationRunning && currentItemIndex < queueSize - 1 && !isLoadingCurrent,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Skip")
+                    Text("Next >")
                 }
             }
             TextButton(
@@ -1489,9 +1512,6 @@ private fun ResultCard(resultBitmap: BufferedImage?, onSaveResult: (BufferedImag
         }
     }
 }
-
-// Helper to keep old function signature if needed, but we don't use it anymore
-// ...
 
 fun loadImageFromFile(file: File): BufferedImage? {
     return try {
