@@ -11,7 +11,7 @@ import org.opencv.imgproc.Imgproc
 import kotlin.math.max
 import kotlin.math.min
 
-private const val DEFAULT_MATCH_THRESHOLD = 0.9
+private const val DEFAULT_MATCH_THRESHOLD = 0.75  // Diturunkan dari 0.9 — TM_CCOEFF_NORMED lebih strict
 private const val DEFAULT_ALPHA_THRESHOLD = 5.0
 private const val MAX_DETECTIONS_PER_IMAGE = 10
 
@@ -56,26 +56,6 @@ object WatermarkDetector {
         var combinedResult = Mat()
 
         return try {
-            // Check channel count and convert accordingly
-            // OpenCVUtils.bufferedImageToMat returns CV_8UC4 (ABGR or BGRA) usually
-
-            // Convert to proper color spaces.
-            // Note: OpenCV Java treats 4 channel loaded images as BGRA usually.
-            // Imgproc.COLOR_RGBA2GRAY works if input is RGBA.
-            // BufferedImages are usually ARGB or ABGR.
-            // Let's assume OpenCVUtils puts them in a way OpenCV understands as byte array.
-            // If it's 4BYTE_ABGR, then bytes are A, B, G, R.
-            // If we interpret as Mat, it sees [A, B, G, R].
-            // To get Gray from BGRA, we need COLOR_BGRA2GRAY.
-            // But let's check what Utils.bitmapToMat does in Android. It converts Bitmap (ARGB_8888) to RGBA or BGRA Mat.
-            // Android Bitmap is RGBA usually? Actually it depends.
-
-            // Standardizing to RGBA/BGRA logic:
-            // Let's assume input Mat is BGRA (common in OpenCV desktop).
-
-            // We need to be careful with channel ordering.
-            // For simplicity, let's treat them as BGRA.
-
             Imgproc.cvtColor(baseMat, baseGray, Imgproc.COLOR_BGRA2GRAY)
             Imgproc.cvtColor(watermarkMat, watermarkGray, Imgproc.COLOR_BGRA2GRAY)
             Imgproc.cvtColor(baseMat, baseBgr, Imgproc.COLOR_BGRA2BGR)
@@ -105,12 +85,16 @@ object WatermarkDetector {
             Imgproc.Canny(watermarkGrayRoi, watermarkEdges, 40.0, 120.0)
             Core.bitwise_and(watermarkEdges, watermarkMaskRoi, watermarkEdges)
 
+            // FIX: Ganti TM_CCORR_NORMED → TM_CCOEFF_NORMED
+            // TM_CCOEFF_NORMED mengukur korelasi terhadap mean (deviasi),
+            // sehingga tidak bergantung pada brightness absolut background.
+            // Watermark putih di area gelap pun bisa terdeteksi.
             resultGray = Mat()
             Imgproc.matchTemplate(
                 baseGray,
                 watermarkGrayRoi,
                 resultGray,
-                Imgproc.TM_CCORR_NORMED,
+                Imgproc.TM_CCOEFF_NORMED,  // ← FIX
                 watermarkMaskRoi
             )
 
@@ -121,11 +105,12 @@ object WatermarkDetector {
                 val channelResult = Mat()
                 Core.extractChannel(baseBgr, baseChannel, channel)
                 Core.extractChannel(watermarkBgrRoi, watermarkChannel, channel)
+                // FIX: Sama, ganti ke TM_CCOEFF_NORMED untuk per-channel color matching
                 Imgproc.matchTemplate(
                     baseChannel,
                     watermarkChannel,
                     channelResult,
-                    Imgproc.TM_CCORR_NORMED,
+                    Imgproc.TM_CCOEFF_NORMED,  // ← FIX
                     watermarkMaskRoi
                 )
                 Core.add(colorAccumulation, channelResult, colorAccumulation)
@@ -135,6 +120,8 @@ object WatermarkDetector {
             }
             Core.multiply(colorAccumulation, Scalar(1.0 / 3.0), colorAccumulation)
 
+            // Edge matching tetap pakai TM_CCORR_NORMED — edge sudah binary (0/255),
+            // tidak terpengaruh brightness background, jadi aman dibiarkan.
             resultEdges = Mat()
             Imgproc.matchTemplate(
                 baseEdges,
@@ -149,6 +136,7 @@ object WatermarkDetector {
             Core.addWeighted(combinedResult, 0.8, resultEdges, 0.2, 0.0, temp)
             combinedResult.release()
             combinedResult = temp
+            // normalize() memastikan nilai negatif dari TM_CCOEFF_NORMED di-clamp ke range [0,1]
             Core.normalize(combinedResult, combinedResult, 0.0, 1.0, Core.NORM_MINMAX)
             watermarkEdges.release()
 
